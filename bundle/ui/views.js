@@ -42,19 +42,37 @@ function homeHTML(state) {
       <div class="flow__step"><span class="flow__num">2</span><div><div class="flow__title">编辑大纲</div><div class="flow__text">逐页调整标题、观点与页面类型</div></div></div>
       <div class="flow__step"><span class="flow__num">3</span><div><div class="flow__title">打磨并导出</div><div class="flow__text">三栏工作区预览，导出可编辑 PPTX</div></div></div>
     </section>
+    ${(state.savedDecks || []).length ? `<section class="saved-decks">
+      <div class="row row--between"><div><div class="panel__title">已保存的 PPT</div>
+        <div class="tiny">完成编辑后点「保存并返回首页」，这里会保留最近 ${state.savedDecks.length} 份，可随时重新打开</div></div></div>
+      <div class="deck-list">${state.savedDecks.map((x) => `
+        <div class="deck-item">
+          <div class="deck-item__main">
+            <b>${esc(x.title)}</b>
+            <span class="tiny">${x.pages} 页 · ${esc(x.themeName)} · ${new Date(x.at).toLocaleString('zh-CN')}</span>
+          </div>
+          <button class="btn btn--secondary btn--sm" data-action="deck:open" data-id="${esc(x.id)}">打开</button>
+          <button class="icon-btn icon-btn--danger" data-action="deck:remove" data-id="${esc(x.id)}" title="删除存档">×</button>
+        </div>`).join('')}</div>
+    </section>` : ''}
     <div class="home__foot">
-      <span class="tiny">SlideCraft AI · 阶段 4 · Anna AI 接入 · 自然语言改页 · 动态主题 · 12 种布局</span>
+      <span class="tiny">SlideCraft AI · 阶段 4 · Anna AI 接入 · 自然语言改页 · 动态主题 · 12 种布局 · 图标与 AI 配图</span>
       ${d ? '<button class="btn btn--ghost btn--sm" data-action="draft:reset">清除已保存草稿</button>' : ''}
     </div>
   </div></div>`;
 }
 
-function themeCards(selected) {
-  return Object.values(THEMES)
+function themeCards(selected, customThemes = []) {
+  const presets = Object.values(THEMES).map((t) => ({ ...t, caption: t.caption, swatch: t.swatch }));
+  const saved = customThemes.map((t) => ({
+    id: t.id, name: t.name, caption: '我保存的主题 · AI 生成 / 自定义',
+    swatch: [t.background, t.primaryColor, t.accentColor],
+  }));
+  return [...presets, ...saved]
     .map((t) => {
       const active = t.id === selected;
-      return `<button class="theme-card${active ? ' theme-card--active' : ''}" data-action="form:theme" data-theme="${t.id}">
-        <span class="theme-card__swatch">${t.swatch.map((c) => `<i style="background:${c}"></i>`).join('')}</span>
+      return `<button class="theme-card${active ? ' theme-card--active' : ''}" data-action="form:theme" data-theme="${esc(t.id)}">
+        <span class="theme-card__swatch">${t.swatch.map((c) => `<i style="background:${esc(c || '#FFFFFF')}"></i>`).join('')}</span>
         <span><span class="theme-card__name">${esc(t.name)}</span><span class="theme-card__desc">${esc(t.caption)}</span></span>
         ${active ? '<span class="theme-card__check">✓</span>' : ''}
       </button>`;
@@ -119,8 +137,8 @@ function createHTML(state) {
 
     <div style="height:18px"></div>
     <section class="panel">
-      <div class="panel__head"><div><div class="panel__title">主题风格</div><div class="panel__desc">第一版提供两套主题，后续可在工作区随时切换</div></div></div>
-      <div class="panel__body"><div class="theme-grid">${themeCards(f.theme)}</div></div>
+      <div class="panel__head"><div><div class="panel__title">主题风格</div><div class="panel__desc">内置预设 + 主题库中已沉淀的自定义主题，后续可在工作区随时切换</div></div></div>
+      <div class="panel__body"><div class="theme-grid">${themeCards(f.theme, state.customThemes || [])}</div></div>
     </section>
 
     <div class="row" style="margin-top:24px">

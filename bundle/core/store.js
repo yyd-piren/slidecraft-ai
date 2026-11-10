@@ -14,6 +14,8 @@ const STATUS_KEYS = [
   // 阶段 4：AI 模式与真实调用反馈（只影响顶栏/浮层，不重建输入区）
   'aiMode', 'aiModeNote', 'lastAiCall', 'aiError',
   'aiModels', 'aiModel', 'aiQuota', 'aiQuotaAt', 'aiCatalogError',
+  // 阶段 4 细节：主题库 / PPT 归档 / 截断警告
+  'aiWarnings',
 ];
 
 export function createStore() {
@@ -48,6 +50,12 @@ export function createStore() {
     aiQuota: null,               // 剩余 CU（number | null）
     aiQuotaAt: null,             // 上次刷新时间
     aiCatalogError: '',          // 目录/额度不可用时的可读说明
+    // 主题库 / 已完成 PPT 归档 / 页面装饰
+    customThemes: [],            // AI 生成并沉淀的自定义主题
+    savedDecks: [],              // 已保存的 PPT 摘要（首页可重新打开）
+    imagePrompt: '',             // AI 配图描述
+    aiWarnings: [],              // 逐页生成截断等可见警告
+    selectedBlockId: null,       // 自由布局里当前选中的块
   };
 
   const listeners = { render: new Set(), visual: new Set(), status: new Set() };

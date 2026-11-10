@@ -16,6 +16,7 @@ import {
   normalizeElements, toLayout,
 } from '../core/deck.js';
 import { AiError, AI_ERROR_CODES, toAiError, outputError } from './errors.js';
+import { normalizeBlocks } from '../core/blocks.js';
 
 export const MAX_TITLE = 90;
 export const MAX_POINT_TEXT = 60;
@@ -169,6 +170,41 @@ function attachRepairs(obj, repairs) {
   try { Object.defineProperty(obj, '__parseRepairs', { value: repairs, enumerable: false }); }
   catch { /* 冻结对象时忽略 */ }
   return obj;
+}
+
+/**
+ * 逐页生成的截断救回：从原始文本里逐个提取「已经写完整」的 slide 对象。
+ *
+ * 整段 JSON 被 maxTokens 切断时，closeTruncated 常因截在某个字符串/键名中间
+ * 而补出非法 JSON，导致整批报「解析失败」。这里改为按对象边界扫描：
+ * 前面完整的页一律保留，只放弃最后一个残缺对象，再由业务层为缺页做本地兜底。
+ */
+function salvageSlidesJson(rawText) {
+  const s = String(rawText || '');
+  const marker = /"slides"\s*:\s*\[/.exec(s);
+  if (!marker) return null;
+  const tryParse = (t) => { try { return JSON.parse(t); } catch { return undefined; } };
+  let i = marker.index + marker[0].length;
+  const out = [];
+  while (i < s.length) {
+    while (i < s.length && /[\s,]/.test(s[i])) i += 1;
+    if (i >= s.length || s[i] === ']') break;
+    if (s[i] !== '{') break;
+    const piece = balancedSlice(s, i);
+    if (piece.closed) {
+      const obj = tryParse(piece.text);
+      if (!obj || typeof obj !== 'object' || Array.isArray(obj)) break;
+      // 只保留结构完整的页：缺 layout/type 的半成品补齐后仍会让字段校验抛错，
+      // 反而把整批生成拖垮，不如交给 buildFallbackSlides 用大纲生成并明确警告。
+      if (!obj.layout && !obj.type) break;
+      out.push(obj);
+      i += piece.text.length;
+    } else {
+      // 最后一个对象被 maxTokens 切断：整体放弃这一页，由业务层兜底。
+      break;
+    }
+  }
+  return out.length ? { slides: out } : null;
 }
 
 /**
@@ -368,6 +404,8 @@ function normalizeSlideFields(raw, repairs, { withId = false } = {}) {
     design: normalizeDesign(src.design, repairs) ?? undefined,
     elements: normalizeElementList(src.elements, repairs) ?? [],
     chart: normalizeChart(src.chart, repairs) ?? null,
+    // AI 给出的自由布局位置骨架：校验 kind、clamp 坐标；文字由 resolveBlocks 本地补齐。
+    blocks: Array.isArray(src.blocks) ? normalizeBlocks(src.blocks) : [],
   };
   if (withId) out.id = cleanText(src.id, 60, 'slide.id', repairs) || uid('sl');
   return out;
@@ -421,18 +459,44 @@ export function parseOutlineResult(text, { pageCount = 8, meta = {} } = {}) {
   };
 }
 
-export function parseSlidesResult(text, { batch = [] } = {}) {
+export function parseSlidesResult(text, { batch = [], allowPartial = false } = {}) {
   const repairs = [];
-  const root = takeRepairs(parseJsonLoose(extractTextOrRaw(text)), repairs);
+  const rawText = extractTextOrRaw(text);
+  let root;
+  try {
+    root = takeRepairs(parseJsonLoose(rawText), repairs);
+  } catch (e) {
+    // 只有「逐页生成」允许截断救回；单页 patch / 主题等仍严格校验，避免写入半个对象。
+    const salvaged = allowPartial && e?.details?.truncated ? salvageSlidesJson(rawText) : null;
+    if (!salvaged) throw e;
+    root = salvaged;
+    repair(repairs, `模型输出被截断，已救回 ${salvaged.slides.length} 页完整内容`);
+  }
   // 模型偶尔把顶层数组写成 {items:[...]} 或直接叫 pages。
   const slidesRaw = root.slides ?? root.pages ?? root.items;
   if (!Array.isArray(slidesRaw)) throw outputError('缺少 slides 数组');
   if (slidesRaw !== root.slides) repair(repairs, '模型使用了非标准顶层字段名，已映射为 slides');
   root.slides = slidesRaw;
-  if (root.slides.length !== batch.length) {
+  if (allowPartial) {
+    // 截断补全可能造出缺关键字段的半成品页；丢弃并留痕，由缺页兜底接管。
+    const whole = root.slides.filter((s) => s && typeof s === 'object' && !Array.isArray(s) && (s.layout || s.type));
+    if (whole.length !== root.slides.length) {
+      repair(repairs, `丢弃 ${root.slides.length - whole.length} 页结构不完整的输出`);
+      root.slides = whole;
+    }
+  }
+  if (root.slides.length > batch.length) {
+    repair(repairs, `模型返回 ${root.slides.length} 页，多于本批 ${batch.length} 页，已保留前 ${batch.length} 页`);
+  }
+  if (root.slides.length !== batch.length && !allowPartial) {
     throw outputError(`返回 ${root.slides.length} 页，本批需要 ${batch.length} 页`);
   }
-  const slides = root.slides.map((raw, i) => {
+  const used = root.slides.slice(0, batch.length);
+  const missing = batch.slice(used.length);
+  if (missing.length) {
+    repair(repairs, `本批需要 ${batch.length} 页，模型只返回 ${used.length} 页；${missing.length} 页将用大纲本地生成`);
+  }
+  const slides = used.map((raw, i) => {
     const cleaned = normalizeSlideFields(raw, repairs);
     const expectedId = batch[i]?.id;
     const givenId = cleanText(raw?.outlineId, 60, 'outlineId', repairs);
@@ -447,8 +511,35 @@ export function parseSlidesResult(text, { batch = [] } = {}) {
   });
   return {
     slides,
-    summary: finish({ pages: slides.length, layouts: slides.map((s) => s.layout) }, repairs),
+    summary: finish({
+      pages: slides.length,
+      layouts: slides.map((s) => s.layout),
+      truncated: missing.length > 0,
+      missing,
+      missingCount: missing.length,
+    }, repairs),
   };
+}
+
+/**
+ * 缺页兜底：用大纲条目生成一页结构完整、内容明确标注的 Slide（本地、零 CU）。
+ * 不 pretending 成 AI 输出，业务层会给出可见警告并提示可单独「重新生成页面」。
+ */
+export function buildFallbackSlides(missing = [], startIndex = 0, total = 8) {
+  return missing.map((o, i) => normalizeSlide({
+    id: uid('sl'),
+    outlineId: o.id,
+    layout: toLayout(o.pageType || defaultTypeFor(startIndex + i, total)),
+    title: String(o.title || '未命名页面'),
+    subtitle: '',
+    points: [{ text: String(o.keyPoint || o.title || '核心观点').slice(0, 60), detail: '' }],
+    evidence: '',
+    visualHint: '本页因模型输出截断由大纲自动生成，可点击「重新生成页面」补全',
+    notes: '此页为大纲占位内容，建议重新生成后再演示。',
+    chapter: String(o.chapter || ''),
+    elements: [],
+    chart: null,
+  }, startIndex + i, total));
 }
 
 /** 单页 patch：regenerateSlide / editSlideByInstruction / changeSlideLayout 共用。 */
@@ -468,7 +559,7 @@ export function parseSlidePatchResult(text, { slide = null, allowedFields = null
   }
   const allowed = allowedFields || [
     'type', 'layout', 'title', 'subtitle', 'points', 'evidence', 'visualHint',
-    'notes', 'chapter', 'design', 'elements', 'chart',
+    'notes', 'chapter', 'design', 'elements', 'chart', 'blocks',
   ];
   const patch = {};
   for (const key of allowed) {
@@ -476,6 +567,7 @@ export function parseSlidePatchResult(text, { slide = null, allowedFields = null
     if (key === 'layout' || key === 'type') patch[key] = checkLayout(effective[key] || effective.layout || effective.type, repairs);
     else if (key === 'points') patch[key] = normalizePoints(effective[key], repairs) ?? [];
     else if (key === 'elements') patch[key] = normalizeElementList(effective[key], repairs) ?? [];
+    else if (key === 'blocks') patch[key] = Array.isArray(effective[key]) ? normalizeBlocks(effective[key]) : [];
     else if (key === 'design') patch[key] = normalizeDesign(effective[key], repairs);
     else if (key === 'chart') patch[key] = normalizeChart(effective[key], repairs) ?? null;
     else if (key === 'notes') patch[key] = cleanText(effective[key], 400, '演讲者备注', repairs);

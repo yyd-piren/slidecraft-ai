@@ -5,6 +5,8 @@
  * 与 HTML 预览共享同一份业务数据（slide.points / slide.elements / slide.chart），不读取 DOM。
  */
 import { rect, REGIONS, grid, SLIDE_W, SLIDE_H, gapFor } from './pptx-coords.js';
+import { normalizeDecorations } from '../core/decorations.js';
+import { renderBlocksToPptx } from './pptx-blocks.js';
 import { addFittedText, addPointList } from './pptx-text.js';
 import {
   normalizeKind, drawCard, drawNode, drawConnector, drawLayer, drawStep,
@@ -323,16 +325,76 @@ const RENDERERS = {
   summary: renderSummary,
 };
 
-/** 渲染单页：统一背景 → 布局 → 备注。 */
+/**
+ * 页面装饰：用户主动插入的内置图标 / Anna AI 配图。
+ * 与 AI 随机的 elements 不同，这是显式、可控的素材，因此对**所有**布局统一叠加。
+ * 图标 = 原生圆角矩形 + 原生文本框（中文单字），图片 = 原生 addImage 对象，均可编辑。
+ */
+function drawDecorations(ctx) {
+  const list = normalizeDecorations(ctx.s.decorations);
+  const { slide, theme, report } = ctx;
+  for (const d of list) {
+    const box = rect(d.x, d.y, d.w, d.h);
+    if (d.kind === 'image' && d.src) {
+      try {
+        slide.addImage({ data: d.src, ...box });
+      } catch {
+        // 某些 Office 版本不接受 SVG data URI：降级为可编辑占位形状，绝不中断整份导出。
+        drawCard(slide, box, theme, { fill: theme.colors.surface, lineWidth: 0.5 });
+        addFittedText(slide, d.caption || '配图', box, {
+          fontSize: theme.sizes.small + 2, fontFace: theme.font, color: theme.colors.muted,
+          align: 'center', valign: 'mid',
+        }, report);
+        if (report) report({ type: 'image', message: '配图格式不受当前渲染器支持，已改用可编辑占位框', detail: '' });
+        continue;
+      }
+      if (d.caption) {
+        addFittedText(slide, d.caption, { x: box.x, y: box.y + box.h + 0.03, w: box.w, h: 0.22 }, {
+          fontSize: theme.sizes.small, fontFace: theme.font, color: theme.colors.muted, align: 'center',
+        }, report);
+      }
+    } else if (d.kind === 'callout') {
+      drawCard(slide, box, theme, { fill: theme.colors.surface, lineWidth: 0.5 });
+      addFittedText(slide, d.caption || d.label, {
+        x: box.x + 0.08, y: box.y + 0.04, w: box.w - 0.16, h: box.h - 0.08,
+      }, {
+        fontSize: theme.sizes.small + 2, fontFace: theme.font, color: theme.colors.body, valign: 'mid',
+      }, report);
+    } else {
+      slide.addShape('roundRect', {
+        ...box, fill: { color: theme.colors.accent },
+        line: { color: theme.colors.primary, width: 0.75 },
+      });
+      addFittedText(slide, d.glyph, box, {
+        fontSize: Math.max(14, theme.sizes.card + 6), fontFace: theme.font,
+        color: theme.colors.primary, bold: true, align: 'center', valign: 'mid',
+      }, report);
+      if (d.caption) {
+        addFittedText(slide, d.caption, { x: box.x - 0.06, y: box.y + box.h + 0.02, w: box.w + 0.12, h: 0.2 }, {
+          fontSize: theme.sizes.small, fontFace: theme.font, color: theme.colors.muted, align: 'center',
+        }, report);
+      }
+    }
+  }
+}
+
+/** 渲染单页：统一背景 → 布局 → 用户插入的装饰 → 备注。 */
 export function renderSlideToPptx(ctx) {
   background(ctx.slide, ctx.theme);
-  const key = ctx.layout;
-  const fn = RENDERERS[key] || RENDERERS.content;
-  fn(ctx);
-  // 不再对所有布局叠加「带坐标的自由元素」：
+  const freeBlocks = ctx.s.freeLayout === true && Array.isArray(ctx.s.blocks) && ctx.s.blocks.length > 0;
+  if (freeBlocks) {
+    // 自由布局：跳过自动构图，按用户拖好的同一份坐标逐块绘制，杜绝导出排版漂移。
+    renderBlocksToPptx(ctx);
+  } else {
+    const key = ctx.layout;
+    const fn = RENDERERS[key] || RENDERERS.content;
+    fn(ctx);
+  }
+  // 不再对所有布局叠加「AI 生成的带坐标自由元素」：
   // 动态布局已通过 parts() 消费 elements，静态布局按 points 排版；
   // 曾出现真实 AI 在目录页生成 step 元素被二次绘制，圆形编号与卡片文字大面积重叠。
   // renderFreeElements 仍保留为可显式调用的扩展能力，但默认不参与单页渲染。
+  drawDecorations(ctx);
   notes(ctx);
 }
 

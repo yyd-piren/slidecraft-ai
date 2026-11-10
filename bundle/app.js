@@ -8,8 +8,8 @@
  * AI 模式：
  * - 生产（非 localhost）默认真实 AnnaAIProvider；
  * - 本地 dev / 独立预览默认 Mock，配合 anna-app dev --no-llm 做到零 CU；
- * - 显式 ?ai=anna / ?aiReal=1 才在本地启用真实 Provider，且本地环境硬性 maxCalls=1
- *   （阶段 4 验收闸门，生产不限制）。
+ * - 显式 ?ai=anna / ?aiReal=1 才在本地启用真实 Provider；
+ * - 调用次数默认不设上限（阶段 4 验收期的闸门已移除）；如需自设上限可用 ?aiMaxCalls=N。
  */
 import { connectPlatform } from './core/platform.js';
 import { createStore } from './core/store.js';
@@ -18,9 +18,13 @@ import { createAiAdapter, resolveAiMode } from './ai/adapter.js';
 import { createAnnaProvider } from './ai/anna-provider.js';
 import { readableAiError } from './ai/errors.js';
 import { createActions } from './core/actions.js';
+import { createLibrary } from './core/library.js';
+import { createImageProvider, createMockImageProvider } from './ai/image-provider.js';
 import {
   DECK_STORAGE_KEY, UNDO_STORAGE_KEY, validateDeck, normalizeDeck, normalizeTheme, defaultMeta,
+  copy as copyDeep,
 } from './core/deck.js';
+import { overlapRatio, normalizeBlocks } from './core/blocks.js';
 import { renderApp } from './ui/views.js';
 import { refreshVisuals } from './ui/workspace.js';
 import { overlayHTML, patchStatus, fitSlides } from './ui/common.js';
@@ -49,16 +53,15 @@ async function boot() {
   const platform = await connectPlatform();
   const store = createStore();
   const logbook = createLogbook(platform.storage);
+  // 主题库与已完成 PPT 归档：同样只走 anna.storage，不引入服务端。
+  const library = createLibrary(platform.storage);
 
   const requestedMode = resolveAiMode({
     hostname: location.hostname, search: location.search, parentSearch,
   });
-  // 本地默认严格 1 次（防止误烧额度）；只有显式 aiMaxCalls=N 才放开，上限 50 次。
-  // 生产环境不限制正常业务使用。
+  // 默认不限次数（本地与生产一致）；aiMaxCalls=N 仅作为用户主动设定的可选保护，不再封顶。
   const cap = Number(allParams.get('aiMaxCalls'));
-  const maxCalls = Number.isFinite(cap) && cap >= 1
-    ? Math.min(50, Math.floor(cap))
-    : (isLocal ? 1 : Infinity);
+  const maxCalls = Number.isFinite(cap) && cap >= 1 ? Math.floor(cap) : Infinity;
   let savedModel = '';
   try { savedModel = window.localStorage.getItem('slidecraft:ai-model') || ''; }
   catch { /* 隐私模式下忽略 */ }
@@ -95,7 +98,24 @@ async function boot() {
     ai = createAiAdapter({ mode: 'mock', logbook });
   }
 
-  const actions = createActions({ store, ai, platform, logbook });
+  // 配图能力：真实模式走 Anna 平台 image.generate；演示模式用本地矢量占位，零 CU。
+  // 两者实现同一 generate() 契约，业务层不感知差异，也不会在初始化时自动调用。
+  const imageProvider = aiMode === 'anna' && platform.anna?.image
+    ? createImageProvider({
+      anna: platform.anna,
+      onCall: (record) => {
+        Promise.resolve(logbook?.write({
+          mode: 'anna', action: 'generate_image', model: record.model || null,
+          quotaConsumed: record.quotaUsed ?? null,
+          status: record.ok ? 'ok' : 'error',
+          outputChars: record.bytes || 0,
+          note: record.ok ? 'Anna 平台原生图片生成' : `图片生成失败：${record.errorCode || 'unknown'}`,
+        })).catch(() => {});
+      },
+    })
+    : createMockImageProvider();
+
+  const actions = createActions({ store, ai, platform, logbook, library, imageProvider });
 
   let lastView = null;
 
@@ -155,6 +175,8 @@ async function boot() {
   );
   status(store.get());
 
+  // 只读载入主题库与已保存的 PPT 索引；页面初始化绝不触发任何 AI / 图片生成调用。
+  Promise.resolve(actions.loadLibrary()).catch(() => {});
   // 真实模式启动时拉一次模型目录 + 余额；失败只影响该区域显示，不阻断应用。
   if (aiMode === 'anna') Promise.resolve(actions.refreshQuota()).catch(() => {});
 
@@ -204,8 +226,21 @@ async function boot() {
       case 'theme:generate': return actions.applyThemeByInstruction();
       case 'theme:apply-draft': return actions.applyThemeDraft();
       case 'ai:refresh': return actions.refreshQuota();
+      case 'ai:warnings-dismiss': return actions.dismissWarnings();
       case 'undo:last': return actions.undo();
       case 'modal:close': return actions.closeModal();
+      // 阶段 4 细节：保存/新建/归档、主题库、图标与 AI 配图
+      case 'ws:save-home': return actions.saveAndGoHome();
+      case 'deck:save-new': return actions.saveAndStartNew();
+      case 'deck:open': return actions.openSavedDeck(btn.dataset.id);
+      case 'deck:remove': return actions.removeSavedDeck(btn.dataset.id);
+      case 'theme:apply-saved': return actions.applySavedTheme(btn.dataset.id);
+      case 'theme:remove-saved': return actions.removeSavedTheme(btn.dataset.id);
+      case 'deco:icon': return actions.insertIcon(btn.dataset.key);
+      case 'deco:generate-image': return actions.generateImage();
+      case 'deco:remove': return actions.removeDecoration(btn.dataset.id);
+      case 'layout:toggle': return actions.toggleFreeLayout();
+      case 'layout:reset': return actions.resetBlocks();
       default: console.warn('[SlideCraft] 未处理的动作：', a);
     }
   }
@@ -223,6 +258,7 @@ async function boot() {
   function onInput(e) {
     const el = e.target;
     if (el.dataset.liveBind === 'aiDraft') { actions.setAiDraft(el.value); return; }
+    if (el.dataset.liveBind === 'imagePrompt') { actions.setImagePrompt(el.value); return; }
     if (el.dataset.draftBind) { handleDraft(el.dataset.draftBind, el.value); return; }
     const bind = el.dataset.bind;
     if (!bind) return;
@@ -242,6 +278,85 @@ async function boot() {
     else actions.editField(bind, el.value, 'render'); // 结构性字段：重建视图
   }
 
+  // ---------------- 自由布局：画布内拖动 / 缩放块 ----------------
+  // 拖拽期间只改 DOM 样式（不重绘、不丢焦点），松开才把归一化坐标一次性写回 Deck；
+  // PPTX 导出读的是同一份坐标，因此「拖到哪，导出就在哪」。
+  const SNAP = 0.01;
+  const PAGE_M = 0.055;
+  const snap = (v) => Math.round(v / SNAP) * SNAP;
+  let drag = null;
+
+  function onPointerDown(e) {
+    if (e.button !== 0) return;
+    const el = e.target.closest?.('[data-blk-id]');
+    if (!el) return;
+    const state = store.get();
+    const slide = state.deck?.slides.find((s) => s.id === state.selectedSlideId);
+    if (!slide || slide.freeLayout !== true) return;
+    const id = el.dataset.blkId;
+    const block = (slide.blocks || []).find((b) => b.id === id);
+    // 只允许在主画布上拖动；左侧缩略图里的同款块只用于预览，不响应拖拽。
+    const holder = el.closest('[data-slide-canvas]');
+    const canvas = holder?.querySelector('.slide');
+    if (!block || !canvas) return;
+    e.preventDefault();
+    const bounds = canvas.getBoundingClientRect();
+    drag = {
+      el, canvas, slideId: slide.id, blockId: id,
+      startX: e.clientX, startY: e.clientY,
+      cw: bounds.width || 1, ch: bounds.height || 1,
+      orig: { x: block.x, y: block.y, w: block.w, h: block.h },
+      isResize: !!e.target.closest('[data-blk-resize]'),
+      before: copyDeep(slide),
+      others: normalizeBlocks(slide.blocks).filter((b) => b.id !== id),
+      rect: null,
+    };
+    canvas.querySelectorAll('.blk--active').forEach((n) => n.classList.remove('blk--active'));
+    el.classList.add('blk--active', 'blk--dragging');
+    actions.selectBlock(id);
+    try { el.setPointerCapture(e.pointerId); } catch { /* 某些浏览器不支持时由 window 兜底 */ }
+  }
+
+  function onPointerMove(e) {
+    if (!drag) return;
+    const dx = (e.clientX - drag.startX) / drag.cw;
+    const dy = (e.clientY - drag.startY) / drag.ch;
+    const o = drag.orig;
+    const r = drag.isResize
+      ? { x: o.x, y: o.y, w: snap(o.w + dx), h: snap(o.h + dy) }
+      : { x: snap(o.x + dx), y: snap(o.y + dy), w: o.w, h: o.h };
+    r.w = Math.max(0.06, Math.min(r.w, 1 - PAGE_M * 2));
+    r.h = Math.max(0.045, Math.min(r.h, 1 - PAGE_M * 2));
+    r.x = Math.max(PAGE_M, Math.min(r.x, 1 - PAGE_M - r.w));
+    r.y = Math.max(PAGE_M, Math.min(r.y, 1 - PAGE_M - r.h));
+    drag.rect = r;
+    Object.assign(drag.el.style, {
+      left: `${(r.x * 100).toFixed(3)}%`, top: `${(r.y * 100).toFixed(3)}%`,
+      width: `${(r.w * 100).toFixed(3)}%`, height: `${(r.h * 100).toFixed(3)}%`,
+    });
+    const bad = new Set(drag.others.filter((b) => overlapRatio(r, b) > 0.2).map((b) => b.id));
+    drag.canvas.querySelectorAll('.blk').forEach((n) => n.classList.toggle('blk--overlap', bad.has(n.dataset.blkId)));
+  }
+
+  function onPointerUp() {
+    if (!drag) return;
+    const d = drag; drag = null;
+    d.el.classList.remove('blk--dragging');
+    if (d.rect) actions.setBlockRect({ slideId: d.slideId, blockId: d.blockId, rect: d.rect, before: d.before });
+  }
+
+  function onPointerCancel() {
+    if (!drag) return;
+    drag = null;
+    actions.selectBlock(null);
+    refreshVisuals(store.get());
+  }
+
+  appEl.addEventListener('pointerdown', onPointerDown);
+  window.addEventListener('pointermove', onPointerMove);
+  window.addEventListener('pointerup', onPointerUp);
+  window.addEventListener('pointercancel', onPointerCancel);
+
   appEl.addEventListener('click', handleAction);
   appEl.addEventListener('input', onInput);
   appEl.addEventListener('change', onChange);
@@ -257,7 +372,7 @@ async function boot() {
   // 本地调试钩子：仅在本机开发/本地 harness 暴露，Staging 域名下不存在。
   if (isLocal) {
     window.__SLIDECRAFT__ = {
-      store, actions, ai, platform, logbook,
+      store, actions, ai, platform, logbook, library, imageProvider,
       aiMode, aiModeNote, requestedMode, maxCalls,
       // 供 E2E 用「注入的假 SDK」验证 Anna Provider，不产生任何真实 RPC。
       createAnnaProvider,

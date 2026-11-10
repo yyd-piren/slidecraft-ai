@@ -10,6 +10,8 @@
  *   因此切主题时所有页面同时改变，但页面文字内容完全不动。
  */
 import { themeVars, isDarkBackground } from './themes.js';
+import { normalizeDecorations } from '../core/decorations.js';
+import { renderBlocksHTML } from './blocks-html.js';
 import { normalizeTheme, toLayout, defaultDesign } from '../core/deck.js';
 import {
   normalizeKind, LAYOUT_MAIN_KIND, hasUsableElements, enrichElements,
@@ -339,6 +341,28 @@ const BODIES = {
   dashboard: dashboardBody,
 };
 
+/** 页面装饰（内置图标 / AI 配图）的 HTML 预览；坐标与 PPTX 侧共用 0~1 归一化值。 */
+function decorationsHTML(slide) {
+  const list = normalizeDecorations(slide?.decorations);
+  if (!list.length) return '';
+  return list.map((d) => {
+    const pos = `left:${(d.x * 100).toFixed(2)}%;top:${(d.y * 100).toFixed(2)}%;width:${(d.w * 100).toFixed(2)}%;height:${(d.h * 100).toFixed(2)}%`;
+    if (d.kind === 'image' && d.src) {
+      return `<div class="slide-deco slide-deco--image" style="${pos}">
+        <img src="${esc(d.src)}" alt="${esc(d.caption || '配图')}" />
+        ${d.caption ? `<span class="slide-deco__caption">${esc(d.caption)}</span>` : ''}
+      </div>`;
+    }
+    if (d.kind === 'callout') {
+      return `<div class="slide-deco slide-deco--callout" style="${pos}">${esc(d.caption || d.label)}</div>`;
+    }
+    return `<div class="slide-deco slide-deco--icon" style="${pos}" title="${esc(d.label)}">
+      <span class="slide-deco__glyph">${esc(d.glyph)}</span>
+      ${d.caption ? `<span class="slide-deco__caption">${esc(d.caption)}</span>` : ''}
+    </div>`;
+  }).join('');
+}
+
 export function renderSlideHTML(slide, themeInput = 'business', opts = {}) {
   const layout = toLayout(slide?.layout || slide?.type);
   const body = BODIES[layout] || contentBody;
@@ -350,14 +374,18 @@ export function renderSlideHTML(slide, themeInput = 'business', opts = {}) {
     layout === 'title' || layout === 'cover'
       ? ''
       : `<div class="slide__foot"><span>${esc(slide?.chapter || '')}</span><span class="slide__page">${pageNo}</span></div>`;
-  return `<div class="slide slide--${layout}${dark ? ' slide--dark' : ''}"
+  // 自由布局：网页与 PPTX 都改用同一份 blocks 坐标，可直接在画布上拖动。
+  const freeBlocks = slide?.freeLayout === true && Array.isArray(slide?.blocks) && slide.blocks.length > 0;
+  const main = freeBlocks ? renderBlocksHTML(slide, themeInput, opts.selectedBlockId) : body(slide || {});
+  return `<div class="slide slide--${layout}${dark ? ' slide--dark' : ''}${freeBlocks ? ' slide--free' : ''}"
       style="${themeVars(themeInput)}"
       data-deco="${esc(theme.decorationStyle)}"
       data-density="${esc(design.density)}"
       data-emphasis="${esc(design.emphasis)}"
       data-align="${esc(design.alignment)}"
       data-slide-id="${esc(slide?.id || '')}">
-    ${body(slide || {})}
+    ${main}
+    ${decorationsHTML(slide)}
     ${foot}
   </div>`;
 }

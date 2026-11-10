@@ -146,8 +146,10 @@ export function createAiAdapter({
           entry.note = `真实 Anna AI · ${recs.length} 次 llm.complete`;
         }
       }
-      // fire-and-forget：日志写失败不影响主流程。
-      Promise.resolve(logbook?.write(entry)).catch(() => {});
+      // 等日志真正落盘再返回，保证 UI / 核查脚本读到的是完整且顺序正确的记录；
+      // 写失败仍不影响主流程（绝不因为日志问题把生成结果判为失败）。
+      try { if (typeof logbook?.write === 'function') await logbook.write(entry); }
+      catch { /* 日志写入失败时静默忽略，不覆盖生成结果 */ }
     }
   }
 

@@ -272,6 +272,13 @@ export function normalizeSlide(raw = {}, index = 0, total = 8) {
     chapter: String(raw.chapter ?? ''),
     design: normalizeDesign(raw.design),
     elements: normalizeElements(raw.elements),
+    // 页面装饰（内置图标 / Anna AI 配图）：渲染层会用 normalizeDecorations 做安全归一化，
+    // 这里只做轻量保留，避免 deck.js 与 decorations.js 产生循环依赖。
+    decorations: Array.isArray(raw.decorations) ? raw.decorations.slice(0, 8) : [],
+    // 自由布局：blocks 是 HTML 预览与 PPTX 导出共用的唯一坐标来源；
+    // freeLayout 为 false 时完全走原来的 12 种自动构图，保证旧草稿与全部回归不变。
+    freeLayout: raw.freeLayout === true,
+    blocks: Array.isArray(raw.blocks) ? raw.blocks.slice(0, 24) : [],
   };
 }
 
@@ -513,9 +520,21 @@ export function setFieldByBind(deck, bind, value) {
 /** 把 AI 返回的页面数组合并进 Deck：按 outlineId 复用已有 slide.id。 */
 export function mergeGeneratedSlides(deck, generated) {
   const idByOutline = new Map(deck.slides.filter((s) => s.outlineId).map((s) => [s.outlineId, s.id]));
+  const decoByOutline = new Map(deck.slides.filter((s) => s.outlineId).map((s) => [s.outlineId, s.decorations || []]));
+  const freeByOutline = new Map(deck.slides.filter((s) => s.outlineId).map((s) => [s.outlineId, s.freeLayout === true]));
   const slides = generated.map((g, i) =>
     normalizeSlide(
-      { ...g, id: idByOutline.get(g.outlineId) || g.id || uid('sl') },
+      {
+        ...g,
+        id: idByOutline.get(g.outlineId) || g.id || uid('sl'),
+        // 重新生成全部页面时，用户手动插入的图标/配图不应被静默丢弃。
+        decorations: Array.isArray(g.decorations) && g.decorations.length
+          ? g.decorations
+          : (decoByOutline.get(g.outlineId) || []),
+        // 重新生成内容后沿用「自由布局」开关；旧坐标不沿用（渲染层会按新内容重建默认块）。
+        freeLayout: g.freeLayout === true || freeByOutline.get(g.outlineId) === true,
+        blocks: Array.isArray(g.blocks) ? g.blocks : [],
+      },
       i,
       generated.length,
     ),

@@ -8,6 +8,7 @@
  * 对比 / 双栏 / 看板 / 图表 / 精简 / 视觉层次 / 装饰」等意图，返回**结构明显不同**
  * 的 layout + elements + design，而不是随机改几个文字字段。
  */
+import { defaultBlocksFor } from '../core/blocks.js';
 import {
   uid, defaultTypeFor, normalizeOutlineItem, normalizeSlide,
   normalizeTheme, toLayout, LAYOUT_LABELS,
@@ -253,7 +254,7 @@ function sampleChart(topic) {
 function buildSlide(item, i, total, meta, existingId) {
   const t = meta.topic || '本主题';
   const type = item.pageType;
-  return normalizeSlide(
+  const slide = normalizeSlide(
     {
       id: existingId || uid('sl'),
       outlineId: item.id,
@@ -289,6 +290,8 @@ function buildSlide(item, i, total, meta, existingId) {
     i,
     total,
   );
+  // Mock 与真实 AI 使用同一份 blocks 契约：开启自由布局后即可直接拖动。
+  return { ...slide, blocks: defaultBlocksFor(slide) };
 }
 
 export async function generateOutline({ meta }, opts = {}) {

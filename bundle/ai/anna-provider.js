@@ -10,14 +10,14 @@
  * 硬性约束：
  * - 业务层 / UI 不接触 SDK；本模块只把 anna 作为构造参数注入。
  * - 所有调用串行（禁止并行 LLM 请求）、零自动重试。
- * - maxCalls 是本阶段验收用的调用闸门（dev 环境设为 1），生产默认不限制。
+ * - maxCalls 默认 Infinity（不限次数）；仅在用户显式设置 aiMaxCalls 时作为可选保护上限。
  * - 失败一律抛出 AiError，绝不静默退回 Mock、绝不伪装成功。
  * - 每次真实调用都留下可核查记录：model / usage / _meta.quotaConsumed（失败时为 null，不虚构 CU）。
  */
 import { PROMPT_BUILDERS, SLIDES_BATCH_SIZE } from './prompts.js';
 import {
   parseOutlineResult, parseSlidesResult, parseSlidePatchResult,
-  parseNewSlideResult, parseThemeResult,
+  parseNewSlideResult, parseThemeResult, buildFallbackSlides,
 } from './parser.js';
 import { AiError, AI_ERROR_CODES, toAiError } from './errors.js';
 
@@ -229,19 +229,30 @@ export function createAnnaProvider({
       const batches = chunk(outline, SLIDES_BATCH_SIZE);
       const slides = [];
       const repairs = [];
+      const warnings = [];
       for (let i = 0; i < batches.length; i += 1) {
-        const prompt = PROMPT_BUILDERS.generateSlides({ meta, outline, batch: batches[i], existingSlides });
+        const batch = batches[i];
+        const prompt = PROMPT_BUILDERS.generateSlides({ meta, outline, batch, existingSlides });
+        // allowPartial：允许模型输出被截断时保留已完整生成的页，缺页用大纲本地兜底。
+        // 这样「一次长输出被截断」不会让整份 PPT 生成失败，也不会静默丢内容。
         const parsed = await runParsed('generate_slides', prompt,
-          (r) => parseSlidesResult(r, { batch: batches[i] }),
+          (r) => parseSlidesResult(r, { batch, allowPartial: true }),
           { batch: { index: i + 1, total: batches.length } });
         mergeRepairs(repairs, parsed.summary);
         slides.push(...parsed.slides);
+        const missing = parsed.summary.missing || [];
+        if (missing.length) {
+          const from = slides.length + 1;
+          slides.push(...buildFallbackSlides(missing, slides.length, outline.length));
+          const msg = `第 ${from}–${from + missing.length - 1} 页因模型输出截断，已按大纲自动生成占位内容，可单独「重新生成页面」补全`;
+          warnings.push({ type: 'truncated', message: msg, batch: i + 1 });
+        }
       }
       return {
         slides,
         summary: {
-          pages: slides.length, batches: batches.length, repairs,
-          localRepairCount: repairs.length, source: 'anna',
+          pages: slides.length, batches: batches.length, repairs, warnings,
+          localRepairCount: repairs.length, truncatedCount: warnings.length, source: 'anna',
         },
       };
     },

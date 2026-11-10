@@ -32,10 +32,11 @@ function aiModalBadge(state) {
 function aiBadgeText(state) {
   if (state.aiMode !== 'anna') return '演示模式 · 未接入 AI';
   const c = state.lastAiCall;
+  // 仅在用户主动设置 aiMaxCalls 时才显示剩余次数；默认不限次数。
   if (c && Number.isFinite(c.limit) && c.used !== null && c.used !== undefined) {
     return `Anna AI · 剩 ${Math.max(0, c.limit - c.used)} 次`;
   }
-  return 'Anna AI 已接入';
+  return 'Anna AI 已接入 · 不限次数';
 }
 
 function aiBadgeTitle(state) {
@@ -43,7 +44,7 @@ function aiBadgeTitle(state) {
   const c = state.lastAiCall;
   const calls = c && Number.isFinite(c.limit)
     ? `本次会话 ${c.used ?? 0}/${c.limit} 次调用 · 剩 ${Math.max(0, c.limit - (c.used ?? 0))} 次`
-    : '点击生成后才会调用 Anna AI';
+    : '调用次数不限 · 点击生成后才会调用 Anna AI';
   if (!c) return calls;
   return [
     calls, `任务 ${c.task || '—'}`, `模型 ${c.model || '—'}`,
@@ -63,9 +64,16 @@ export function selectHTML(items, value, bind, cls = 'select') {
 }
 
 /** 顶栏模型下拉的选项（真实 AI 模式才有）。 */
+/** 模型名常带 vendor/ 前缀且很长；下拉里显示短名，完整名放进 title，避免文字被截断看不全。 */
+function shortModelLabel(m) {
+  const raw = String(m.display || m.name || '');
+  const name = raw.includes('/') ? raw.slice(raw.lastIndexOf('/') + 1) : raw;
+  return name.length > 20 ? `${name.slice(0, 19)}…` : name;
+}
+
 function aiModelOptionsHTML(state) {
   return `<option value="">平台默认模型</option>` + (Array.isArray(state.aiModels) ? state.aiModels : [])
-    .map((m) => `<option value="${esc(m.name)}"${state.aiModel === m.name ? ' selected' : ''}>${esc(m.display || m.name)}</option>`)
+    .map((m) => `<option value="${esc(m.name)}" title="${esc(m.display || m.name)}"${state.aiModel === m.name ? ' selected' : ''}>${esc(shortModelLabel(m))}</option>`)
     .join('');
 }
 
@@ -75,8 +83,9 @@ function aiControlsHTML(state) {
   const sig = models.map((m) => m.name).join('|');
   const quota = Number.isFinite(state.aiQuota) ? state.aiQuota.toFixed(2) : '—';
   const tip = state.aiCatalogError || `Anna 账户剩余额度 · 最后刷新 ${state.aiQuotaAt ? new Date(state.aiQuotaAt).toLocaleTimeString('zh-CN') : '—'}`;
+  const current = models.find((m) => m.name === state.aiModel);
   return `<select class="select select--sm ai-model" data-action="ai:model" data-sig="${esc(sig)}"
-      title="选择本次生成使用的模型；留空表示由平台按账户偏好自动路由">
+      title="${esc(current ? `当前模型：${current.display || current.name}` : '平台默认模型')}｜选择本次生成使用的模型">
       ${aiModelOptionsHTML(state)}
     </select>
     <span class="ai-quota${state.aiCatalogError ? ' ai-quota--warn' : ''}" data-ai-quota title="${esc(tip)}">CU ${quota}</span>
@@ -136,7 +145,10 @@ function exportModal(m) {
         <ul>${warnings.slice(0, 6).map((w) => `<li>${w.page ? `第 ${w.page} 页：` : ''}${esc(w.message)}</li>`).join('')}</ul>
         ${warnings.length > 6 ? `<div class="tiny">…另有 ${warnings.length - 6} 条</div>` : ''}</div>` : ''}
     </div>
-    <div class="modal__foot"><button class="btn btn--secondary" data-action="modal:close">关闭</button></div>
+    <div class="modal__foot">
+      ${r ? '<button class="btn btn--primary" data-action="deck:save-new">✓ 保存并开始新 PPT</button>' : ''}
+      <button class="btn btn--secondary" data-action="modal:close">关闭</button>
+    </div>
   </div></div>`;
 }
 
@@ -235,6 +247,17 @@ function themeModal(state) {
         </button>`;
       }).join('')}</div>
 
+      <div class="prop-title" style="margin-top:18px">我保存的主题 · ${(state.customThemes || []).length} <span class="tiny">（AI 生成或手动微调后自动沉淀，后续 PPT 可直接选用）</span></div>
+      ${(state.customThemes || []).length
+        ? `<div class="saved-row">${state.customThemes.map((t) => `
+            <div class="saved-card${state.deck?.theme?.id === t.id ? ' saved-card--active' : ''}">
+              <span class="preset__swatch"><i style="background:${esc(t.background)}"></i><i style="background:${esc(t.primaryColor)}"></i><i style="background:${esc(t.accentColor)}"></i></span>
+              <span class="saved-card__name" title="${esc(t.name)}">${esc(t.name)}</span>
+              <button class="btn btn--ghost btn--sm" data-action="theme:apply-saved" data-id="${esc(t.id)}">应用</button>
+              <button class="icon-btn icon-btn--danger" data-action="theme:remove-saved" data-id="${esc(t.id)}" title="从主题库移除">×</button>
+            </div>`).join('')}</div>`
+        : '<div class="tiny">还没有保存的主题。用下方自然语言生成一套后，会自动出现在这里。</div>'}
+
       <div class="prop-title" style="margin-top:18px">用自然语言描述整体风格</div>
       <textarea class="textarea" data-draft-bind="theme.prompt" placeholder="例如：将整套 PPT 改为深色科技风，采用深蓝背景和紫色点缀">${esc(state.themePrompt || '')}</textarea>
       <div class="chips" style="margin-top:8px">${THEME_PROMPT_EXAMPLES.map(
@@ -329,6 +352,8 @@ export function patchStatus(state) {
       sel.dataset.sig = sig;
     }
     sel.value = state.aiModel || '';
+    const hit = (state.aiModels || []).find((m) => m.name === state.aiModel);
+    sel.title = hit ? `当前模型：${hit.display || hit.name}` : '平台默认模型';
   }
 }
 

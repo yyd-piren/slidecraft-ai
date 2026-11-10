@@ -13,15 +13,20 @@
 | --- | --- |
 | 创建任务 | 主题、用途、受众、页数、语言、风格、详细程度、补充要求；两套预设主题 |
 | Anna AI | 生产默认调用 `anna.llm.complete`；大纲 / 逐页内容 / 单页修改 / 新增页面 / 全局主题五类能力；本地可切 Mock |
-| 模型与额度 | 顶栏下拉选择模型（留空为平台默认路由）、实时显示剩余 CU、一键刷新；选择持久化到 localStorage |
+| 模型与额度 | 顶栏下拉选择模型（短名显示、完整名在 tooltip，留空为平台默认路由）、实时显示剩余 CU、一键刷新；选择持久化到 localStorage |
 | 结构化大纲 | AI 生成结构化条目，可新增、删除、编辑、上下移动、调整页面类型 |
 | 三栏工作区 | 左侧缩略图、中间 16:9 画布、右侧属性面板（内容编辑 / AI 修改 / 页面设计） |
 | 自然语言改页 | 按描述修改当前页；Mock 按中文意图返回架构图连线、流程图、时间轴、对比、看板等结构 |
 | 三个独立入口 | A 重新生成页面（按大纲）、B 按描述修改页面、C 按描述新增页面（可选插入位置） |
 | 动态主题 | 预设切换、自然语言设计、颜色/字体/字号/间距/圆角/装饰风格自定义；深色背景自动浅色文字 |
+| 主题库 | AI 生成 / 手动微调的主题自动沉淀到 `anna.storage`，主题面板与创建页可直接复用或删除 |
+| 保存与新建 | 工作区「✓ 保存并返回首页」、导出弹窗「✓ 保存并开始新 PPT」；首页列出最近 6 份存档，可重新打开或删除 |
+| 图标与配图 | 16 个内置矢量图标（圆角色块 + 中文单字，零 CU）、Anna 原生 `image.generate` 配图；均为 PPT 原生可编辑对象 |
 | 12 种布局 | title / agenda / content / two-column / image-text / chart / comparison / timeline / flowchart / architecture / dashboard / summary |
 | 撤销与恢复 | 页面修改、主题修改、新增页面均可撤销；草稿与撤销栈写入 `anna.storage`，刷新后可恢复 |
-| 真实 PPTX 导出 | 文本框、形状、连接线、原生图表均为可编辑对象；本地浏览器下载 |
+| 真实 PPTX 导出 | 文本框、形状、连接线、原生图表、图标与配图均为可编辑对象；本地浏览器下载 |
+| 截断保护 | 逐页生成 2 页/批 + 严格输出预算 + 截断救回 + 缺页按大纲兜底，长输出不再让整份 PPT 生成失败 |
+| 自由布局（可拖动） | 画布上每个块可拖动 / 右下角缩放、网格吸附、边界约束、重叠高亮、撤销；**网页坐标与 PPTX 导出坐标完全一致**；AI 生成时输出 0~1 归一化位置 |
 
 ## 快速开始
 
@@ -33,8 +38,8 @@ anna-app dev                     # 真实 LLM 桥接（需已登录的 PAT），
 
 - **生产/Staging**：默认使用真实 `AnnaAIProvider`，只有用户点击「生成」才调用模型。
 - **本地开发**：默认 Mock；`--no-llm` 会禁用 LLM 桥接，双重保证零 CU。
-- 本地如需显式验证真实 Provider，可在 **dashboard 页面** URL 加 `?aiReal=1`（应用 iframe 与 dashboard 同源，会读取父页面参数）；本地默认硬性限制 **1 次** `llm.complete`，防误烧额度。
-- 需要连续验证多项能力时加 `&aiMaxCalls=N`（最大 50），例如 `http://localhost:5180/?aiReal=1&aiMaxCalls=20`；顶栏 badge 会显示剩余次数，刷新页面可重置计数。
+- 本地如需显式验证真实 Provider，可在 **dashboard 页面** URL 加 `?aiReal=1`（应用 iframe 与 dashboard 同源，会读取父页面参数）。
+- **调用次数默认不设上限**（本地与生产一致，顶栏显示「不限次数」）。如仍想自设保护上限，可加 `&aiMaxCalls=N`，例如 `http://localhost:5180/?aiReal=1&aiMaxCalls=20`；此时顶栏才显示剩余次数，刷新页面重置计数。每次调用仍按实际用量计入 CU，请留意余额。
 - 没有 Anna 宿主时应用会明确提示并切到演示模式（不会假装 AI 调用成功）。
 
 ## 目录结构
@@ -49,6 +54,10 @@ bundle/
     store.js                   render / visual / status 三通道状态容器
     actions.js                 业务编排（三个 AI 入口、撤销、导出）
     platform.js                Anna SDK 连接与 storage 抽象
+    blocks.js                  自由布局块模型、默认构图、坐标 clamp 与重叠检测
+    block-style.js             主题驱动的字号 / 配色规格（HTML px ↔ PPTX pt 共用）
+    decorations.js             页面装饰（内置图标 / AI 配图）数据层
+    library.js                 主题库与已完成 PPT 归档（anna.storage）
   ai/
     adapter.js                 Provider 选择、串行队列、调用日志（model / usage / quotaConsumed）
     mock.js                    MockAIProvider（保留，零 CU）
@@ -57,8 +66,11 @@ bundle/
     parser.js                  LLM 文本 → JSON → 严格校验 → Deck normalize
     errors.js                 错误分类与中文可读提示
     logbook.js                写入 anna.storage 的调用日志（不含任何凭据）
+    image-provider.js          封装 anna.image.generate，URL → data URL
   render/
     themes.js, layouts.js      HTML 预览（主题 CSS 变量 + 12 布局）
+    blocks-html.js             自由布局块的 HTML 渲染（百分比坐标）
+    pptx-blocks.js             自由布局块的 PPTX 渲染（同一份坐标）
     pptx-*.js                  PPTX 渲染引擎（见下）
     vendor/                    自包含 PptxGenJS 浏览器 ESM 包
   export/exporter.js           导出流程编排
@@ -91,7 +103,7 @@ executas/slidecraft-ai/         CLI 生成的 ping 脚手架，保留但不作�
 
 **Anna SDK 调用依据**：官方文档 `reference/host-api-llm.md`、平台 SDK 0.27.0 源码、`methods.json`（dispatcher 0.33.0）。`anna.llm.complete({messages, maxTokens, temperature, systemPrompt}, opts?)` 的返回值由 SDK `rt.call()` **直接 resolve `msg.result`**，不再解包 `{result}`；返回含 `model / content.text / usage / _meta.quotaConsumed`。平台没有可用的 JSON-schema 结构化输出参数，因此采用「严格 JSON Prompt + 本地校验」。
 
-**安全与额度**：所有真实调用串行、零自动重试、禁止并行；`maxCalls` 闸门用于本地验收（默认 1 次），生产不限。每次调用记录模型名、输入输出 token、实际 `quotaConsumed`（失败记为 `null`，绝不虚构 CU）；失败一律抛出可读错误，**不静默退回 Mock、不覆盖已有内容**。日志中不含 PAT、Token 或任何凭据。
+**安全与额度**：所有真实调用串行、零自动重试、禁止并行；调用次数默认不限，仅当用户显式传 `aiMaxCalls` 时才启用可选上限。每次调用记录模型名、输入输出 token、实际 `quotaConsumed`（失败记为 `null`，绝不虚构 CU）；失败一律抛出可读错误，**不静默退回 Mock、不覆盖已有内容**。日志中不含 PAT、Token 或任何凭据。
 
 **数据修复**：模型输出缺字段或轻微越界时做本地安全修复并留痕（`summary.repairs`）；结构性非法（未知布局 / 未知元素 / 试图更换 `slide.id` / 页数不符）直接报错，不写入 Deck。本地修复与「再次调用 LLM」严格区分，解析层永不重新发起请求。
 
@@ -147,16 +159,81 @@ npx esbuild entry.js --bundle --format=esm --platform=browser --target=es2020 --
 ## 测试
 
 ```bash
-# 逻辑与渲染单测（95 项）
+# 逻辑与渲染单测（116 项，含 HTML/PPTX 坐标与字号逐项比对、切换前后一致）
 node <测试脚本>            # 阶段 2 的 24 项 + 阶段 2.5 的 14 项 + 阶段 3 的 12 项 + 阶段 4 的 23 项 + 真实输出/模型/动态布局/PPTX 排版 22 项
 
-# 浏览器端到端（43 项，需先启动 anna-app dev --no-llm 与无头 Edge CDP）
+# 浏览器端到端（48 项，含自由布局拖拽、切换前后样式一致与调用次数不限；需先启动 anna-app dev --no-llm 与无头 Edge CDP）
 node <E2E 脚本>
 ```
 
 阶段 4 的单测与 E2E 全部使用**注入的假 SDK**（零真实 RPC、零 CU），覆盖 Provider 接口一致性、7 类 Prompt、Markdown 代码块解析、缺字段 / 非法布局 / 非法元素 / 中文长文本、五类 AI 能力、单页隔离、新增页 ID 唯一、主题不覆盖内容、失败不破坏 Deck、撤销、串行与调用闸门、错误分类、日志记录，以及「真实 AI 返回结构经阶段 3 PPTX 引擎渲染」。
 
 阶段 3 的文件级验证用 `python-pptx` + OOXML 结构检查完成：构造含 12 种布局的综合中文 Deck，导出后可正常打开、页数与顺序正确、16:9、中文字体正确、0 张图片、原生图表与箭头存在。环境中没有安装 LibreOffice / PowerPoint，因此未做 GUI 打开与 PDF 转换验证。
+
+## 阶段 4 细节增强
+
+### 逐页生成的截断防护
+
+真实模型在 4 页/批时常需 1800–3500 tokens，逼近平台单次 4096 上限，末尾一旦截断就报「JSON 解析失败」。现在改为：
+
+1. **2 页/批**（`SLIDES_BATCH_SIZE`），`maxTokens=3000`；Prompt 写明硬性输出预算（标题 ≤24 字、要点 2–3 条、elements ≤5 等）。
+2. `parser.js` 的 `salvageSlidesJson` 按对象边界扫描，只保留**完整闭合**的页；`parseSlidesResult(..., allowPartial)` 丢弃缺字段的半成品并留痕。
+3. 缺页由 `buildFallbackSlides` 用大纲本地生成（零 CU），页面 `visualHint` 明确标注，工作区顶部出现黄色警告条并提示「重新生成页面」。
+4. 单页 patch / 主题生成仍走严格校验，不接受部分结果。
+
+### 主题库与 PPT 归档
+
+`core/library.js` 基于 `anna.storage`：主题库存 `slidecraft.themes`（最多 12 套，按配色 + 名称去重），归档索引存 `slidecraft.deckIndex`、正文按 `slidecraft.deck.<id>` 分开存（最多 6 份）。切换内置预设不会污染主题库；主题修改只替换 `deck.theme`，页面内容逐字节不变。
+
+### 图标与 Anna 原生配图
+
+- **内置图标**：`core/decorations.js` 提供 16 个「圆角色块 + 中文单字」图标，HTML 预览与 PPTX 共用 0~1 归一化坐标；PPTX 中是 `roundRect` 原生形状 + 原生文本框。零 CU、零网络。
+- **AI 配图**：`ai/image-provider.js` 封装 `anna.image.generate({prompt, n:1, size})`（官方 `reference/host-api-image.md`）。返回的 R2 预签名 URL 会被立即 `fetch` 成 data URL 存进 Deck，避免 30 分钟过期；导出走 PptxGenJS 原生 `addImage`，是可选中/缩放/替换的 `<p:pic>` 对象。演示模式用本地 SVG 占位，零 CU。
+- **CSP**：`manifest.json` 的 `csp_overrides` 放行 `img-src` / `connect-src` 的 `https:`，这是官方图片能力要求（否则沙箱无法读取 R2 图片）。
+- **计费提醒**：实测 1024×1024 单次约 **69 CU**（模型 `fal-ai/nano-banana-2`，17.4 s），因此默认已降为 `512x512`，且 UI 有醒目提示；演示模式不产生任何费用。
+
+### 本次使用的 Anna Host API
+
+`AnnaAppRuntime.connect()`、`anna.storage.get/set`、`anna.window.set_title`、`anna.llm.complete`、`anna.llm.catalog`、`anna.image.generate`。没有引入任何外部模型 API，也没有 Python Executa。
+
+## 阶段 4f：自由布局与坐标一致性
+
+### 使用方式
+
+在编辑工作区顶部点 **「⇄ 自由布局」** 开启（旁边有「重新排布」按钮）。开启后画布上的每个块都可以：
+
+- **拖动**改位置、**右下角拖动**改尺寸；坐标按 0.01 网格吸附并自动约束在页面安全区内
+- 选中后显示蓝色边框与类型标签；与其它块重叠超过 20% 时显示红色虚线
+- 一次拖动 = 一条撤销记录；关闭自由布局会回到自动构图，但拖过的坐标会保留
+
+默认**不开启**：这样上一轮修好的 12 种自动构图与「预览/导出数值级对齐」完全不受影响，旧草稿与全部历史回归也保持不变。
+
+**切换前后视觉一致**：开启时生成的默认块严格复刻自动构图——英文眉标（`SUMMARY` / `CONTENTS` / `OVERVIEW`…）、标题下方 52×3px 品牌色细横线、编号 `01/02/03` 卡片与顶部蓝线、`summary` 页脚左侧竖线一句话（其它布局是带蓝色标签的浅灰数据条）。两条链路都用 `block-style.js` 的主题字号/配色，E2E 断言切换前后眉标与标题的 computed 字号、颜色完全相同。
+
+> 曾出现一个真实 bug：`normalizeBlocks` 把「未指定字号」写成 `null`，二次归一化时 `Number(null)=0` 被判为有效值并 clamp 到最小 8px，导致切换后所有文字缩成 8px。现已改为只有 `number` 类型才接受，并加入回归测试。
+
+**图标与配图也能自由布局**：开启时 `slide.decorations` 里的图标/配图会自动转成 `icon` / `image` 块一起拖动，关闭时再还原为装饰，来回切换不丢素材；在自由布局下新插入的图标或 AI 配图也直接进 `blocks`。
+
+### 为什么导出不会再乱
+
+核心是 **唯一坐标来源**：`slide.blocks` 里每个块保存 `{id, kind, x, y, w, h, text, items...}`，坐标是 0~1 归一化值。
+
+| 链路 | 换算 | 输出 |
+| --- | --- | --- |
+| 网页预览 `blocks-html.js` | `left/top/width/height = x/y/w/h × 100%` | 绝对定位 DIV |
+| PPTX 导出 `pptx-blocks.js` | `rect(x,y,w,h)` → 英寸（同一 clamp） | 原生形状 / 文本框 / 图片 / 图表 |
+
+两条链路都先调用同一个 `resolveBlocks(slide)`，**字号共用 `core/block-style.js` 的主题规格**：HTML 用 CSS px（`--t-title` / `--t-body` 同量级）、PPTX 用 `pxToPt = px × 0.75`（1pt = 1.333 CSS px），颜色取同一个 Theme 字段（标题用 `titleColor`、眉标用 `primaryColor`、卡片底用 `surface`）。因此切换自由布局不会改变字号与配色，改主题时两边同步变化。单测验证网页 32px 对应 PPTX 24pt、换成 40px 主题后对应 30pt。
+
+单测还逐项比对 HTML 百分比与 PPTX 形状的 EMU 坐标，**误差 < 0.5%**；拖动后重新导出，坐标同步变化，其它页逐字节不变、0 张图片。
+
+导出前 `findOverlaps` 会检查两两重叠，超过阈值给出中文警告（「本页有 N 处元素相互覆盖，请在网页里拖动调整后再导出」），而不是静默导出乱版。
+
+### AI 生成时的具体位置
+
+Prompt 明确要求模型为每页输出 3–5 个 `blocks` **位置骨架**（只给 `kind` 与 `x/y/w/h`，不重复正文，避免长输出再次被 `maxTokens` 截断），并写明安全区 `x/y ≥ 0.055`、`x+w ≤ 0.945`、标题通常在 `y≈0.15`、正文 `y≈0.30–0.80`、案例条 `y≈0.82`。
+
+`parser.js` 校验 `kind` 白名单并 clamp 坐标；`resolveBlocks` 用同布局的默认构图把文字补进骨架。模型完全不给 `blocks` 时，本地按 12 种布局生成一套整齐的默认块，绝不空白。Mock Provider 也产出同样的 `blocks` 契约。
 
 ## 后续阶段
 
@@ -166,5 +243,5 @@ node <E2E 脚本>
 ## 安全与配置
 
 - `.gitignore` 已排除 `.anna/`、`.backup/`、`.workbuddy/`、凭据、`*.key`、`.env`、`.venv/` 等，任何 PAT / credentials 都不得入库
-- `manifest.json` 已移除未注册的 `tool-dev-*` Executa 依赖；主视图 1360×860
+- `manifest.json` 已移除未注册的 `tool-dev-*` Executa 依赖；主视图 1360×860；`csp_overrides` 仅为 Anna 原生图片能力放行 `https:` 的 `img-src` / `connect-src`
 - 不修改 Anna Runtime 初始化与握手逻辑；草稿通过 `anna.storage` 持久化

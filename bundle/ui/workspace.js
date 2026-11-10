@@ -10,6 +10,8 @@ import {
   LAYOUT_TYPES, LAYOUT_LABELS, EMPHASIS_STYLES, DECORATION_STYLES, DENSITY_STYLES,
 } from '../core/deck.js';
 import { selectHTML, fitSlides, compareTable } from './common.js';
+import { ICON_LIBRARY, normalizeDecorations } from '../core/decorations.js';
+import { normalizeBlocks } from '../core/blocks.js';
 
 const QUICK_LAYOUTS = ['flowchart', 'architecture', 'timeline', 'comparison', 'two-column', 'dashboard', 'chart', 'content'];
 
@@ -128,6 +130,13 @@ function designTabHTML(state, slide) {
   const sid = slide.id;
   const d = slide.design || {};
   const els = slide.elements || [];
+  // 自由布局下图标/配图已转成可拖动块，素材列表要把它们一并列出。
+  const decoBlocks = slide.freeLayout
+    ? normalizeBlocks(slide.blocks)
+      .filter((b) => b.kind === 'icon' || b.kind === 'image')
+      .map((b) => ({ id: b.id, kind: b.kind, caption: b.text || '', label: b.text || '' }))
+    : [];
+  const decos = [...normalizeDecorations(slide.decorations), ...decoBlocks];
   const links = els.filter((e) => e.kind === 'connector').length;
   return `<div class="props">
     <div class="hint-box">布局调整只重新组织页面结构，<b>标题、要点、数据、图表与演讲备注全部保留</b>。</div>
@@ -156,6 +165,29 @@ function designTabHTML(state, slide) {
             (e) => `<li><span class="el-kind">${esc(e.kind)}</span>${esc(e.title || e.text || e.from + ' → ' + e.to || '')}</li>`,
           ).join('')}${els.length > 10 ? `<li class="tiny">…还有 ${els.length - 10} 个</li>` : ''}</ul>`
         : '<div class="tiny">当前布局没有额外元素，使用要点文字渲染。</div>'}
+    </div>
+    <div class="prop-section">
+      <div class="prop-title">插入图标 <span class="tiny">· 原生形状 + 可编辑文字，零 CU</span></div>
+      <div class="icon-grid">${ICON_LIBRARY.map(
+        (i) => `<button class="icon-chip" data-action="deco:icon" data-key="${i.key}" title="${esc(i.hint)}">
+          <span>${esc(i.glyph)}</span><small>${esc(i.label)}</small></button>`,
+      ).join('')}</div>
+      <span class="field__hint">图标会插入到当前页右上角区域，导出后仍可在 PowerPoint 中移动、改色、替换文字</span>
+    </div>
+    <div class="prop-section">
+      <div class="prop-title">AI 生成配图 <span class="tiny">· Anna 平台 image.generate</span></div>
+      <textarea class="textarea" data-live-bind="imagePrompt" placeholder="例如：简洁扁平插画，团队协作与数据看板，蓝白配色，无文字">${esc(state.imagePrompt || '')}</textarea>
+      <button class="btn btn--secondary btn--sm" style="margin-top:8px" data-action="deco:generate-image">✦ 生成并插入配图</button>
+      <span class="field__hint"><b>计费提醒：</b>真实模式下由 Anna 平台按图片模型结算，单次可能消耗数十 CU（已在顶栏显示余额），请确认后再点。演示模式仅插入本地矢量占位图、零 CU。图片以可编辑的原生图片对象导出。</span>
+    </div>
+    <div class="prop-section">
+      <div class="prop-title">本页已插入的素材 · ${decos.length}</div>
+      ${decos.length
+        ? `<ul class="element-list">${decos.map(
+            (d) => `<li><span class="el-kind">${d.kind === 'image' ? '配图' : '图标'}</span>${esc(d.caption || d.label)}
+              <button class="icon-btn icon-btn--danger" data-action="deco:remove" data-id="${esc(d.id)}" title="移除">×</button></li>`,
+          ).join('')}</ul>`
+        : '<div class="tiny">还没有插入图标或配图。</div>'}
     </div>
     ${compareTable(state)}
   </div>`;
@@ -208,9 +240,19 @@ export function renderWorkspace(state) {
         <div class="row">
           <button class="btn btn--secondary btn--sm" data-action="ws:regen" title="按原始大纲重新生成当前页">重新生成页面</button>
           <button class="btn btn--secondary btn--sm" data-action="tab:set" data-tab="ai" title="按自然语言描述修改当前页">按描述修改</button>
+          <button class="btn ${slide.freeLayout ? 'btn--primary' : 'btn--secondary'} btn--sm" data-action="layout:toggle"
+            title="开启后可直接在画布上拖动 / 缩放每个元素，导出的 PPTX 使用完全相同的坐标">
+            ${slide.freeLayout ? '✓ 自由布局' : '⇄ 自由布局'}</button>
+          ${slide.freeLayout ? '<button class="btn btn--ghost btn--sm" data-action="layout:reset" title="按当前内容重新排布（可撤销）">重新排布</button>' : ''}
+          <button class="btn btn--secondary btn--sm" data-action="ws:save-home" title="保存当前 PPT 并返回首页，可继续新建">✓ 保存并返回首页</button>
           <button class="btn btn--primary btn--sm" data-action="ws:export">导出 PPTX</button>
         </div>
       </div>
+      ${slide.freeLayout ? `<div class="free-tip">✥ 拖动元素调整位置 · 右下角拖动缩放 · 坐标自动吸附网格 · <b>网页位置与导出 PPTX 完全一致</b></div>` : ''}
+      ${(state.aiWarnings || []).length ? `<div class="warn-banner">
+        <span>${state.aiWarnings.map((w) => esc(w.message)).join('；')}</span>
+        <button class="btn btn--ghost btn--sm" data-action="ai:warnings-dismiss">知道了</button>
+      </div>` : ''}
       <div class="canvas-area"><div class="canvas-box">
         <div class="slide-frame" data-slide-canvas>${renderSlideHTML(slide, deck.theme, { pageNo })}</div>
         <div class="canvas-caption"><span>16:9 · 960 × 540 逻辑画布</span><span>主题：${esc(theme.name)}</span></div>
@@ -232,7 +274,7 @@ export function refreshVisuals(state) {
   const idx = currentIndex(state);
   const slide = deck.slides[idx];
   if (!slide) return;
-  const html = renderSlideHTML(slide, deck.theme, { pageNo: idx + 1 });
+  const html = renderSlideHTML(slide, deck.theme, { pageNo: idx + 1, selectedBlockId: state.selectedBlockId });
 
   const canvas = document.querySelector('[data-slide-canvas]');
   if (canvas) canvas.innerHTML = html;

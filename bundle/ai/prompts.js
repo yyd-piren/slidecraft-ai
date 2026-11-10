@@ -30,6 +30,10 @@ export const DECK_CONTRACT = [
   '- Theme 必须包含 background / primaryColor / secondaryColor / accentColor / titleColor / bodyColor（均为 #RRGGBB）、fontFamily、titleSize / subtitleSize / bodySize（数字，20–48）、spacing（compact|normal|spacious）、borderRadius（数字）、decorationStyle（minimal|rules|grid|blocks|tech）。',
   '- 颜色必须是 6 位十六进制；深色背景时 titleColor / bodyColor 要用浅色，保证可读。',
   '- 元素坐标 x/y/w/h 若提供，必须是 0～1 的归一化小数；也可以完全省略。',
+  '- 若给出自由布局块 blocks：每项只需 {"kind":"...","x":0.0,"y":0.0,"w":0.0,"h":0.0}，文字由程序按要点自动填充，切勿在 blocks 里重复写正文。',
+  '- blocks[].kind 只能取：kicker / title / subtitle / text / card / metric / node / image / chart。',
+  '- 所有块必须完整落在页面内：x/y ≥ 0.055，x+w ≤ 0.945，y+h ≤ 0.945；块与块之间不要大面积重叠。',
+  '- 标题块通常放 y≈0.15、正文块放 y≈0.30～0.80、数据/案例块放 y≈0.82；同一页按阅读顺序从上到下、从左到右排。',
 ].join('\n');
 
 export const OUTPUT_RULE = [
@@ -45,11 +49,14 @@ export const PROMPT_TASKS = [
 ];
 
 /**
- * 逐页生成分批（串行），控制单次输入输出长度与 CU 消耗。
- * 实测 4 页批量输出约 1780 tokens；maxTokens 已提高到 3200（平台单次默认上限 4096），
- * 留足余量避免 JSON 被截断导致解析失败。
+ * 逐页生成分批（串行），控制单次输出长度、截断风险与 CU 消耗。
+ *
+ * 实测教训：4 页/批时模型写出完整 elements 常需 1800–3500 tokens，
+ * 逼近平台单次上限 4096；一旦末尾被截断，整批 JSON 不完整 → 「解析失败」。
+ * 改为 2 页/批把单次输出预算减半，并配合 parser 的截断救回 + 缺页本地兜底：
+ * 即使某批仍被截断，也只影响 1–2 页，绝不让整份 PPT 生成失败。
  */
-export const SLIDES_BATCH_SIZE = 4;
+export const SLIDES_BATCH_SIZE = 2;
 
 function compact(value, limit = 6000) {
   let s;
@@ -127,12 +134,23 @@ export function buildSlidesPrompt({ meta = {}, outline = [], batch = [], existin
       '每页要有 evidence（一句数据或案例）、visualHint（呈现建议）、notes（演讲者备注）、design（视觉层级）。',
       '字段名必须严格使用 points（数组，元素为 {"text","detail"}）；禁止使用 bullets / items / keyPoints。',
       '不要输出 id、pageType 等额外字段；不要输出省略号或占位符；字符串必须用双引号，不要写注释。',
-      '必须一次性输出完整、闭合的 JSON，不要在最后一个对象处省略内容。',
+      '【严格输出预算】这是防止 JSON 被截断的硬性约束：',
+      '· title ≤ 24 字、subtitle ≤ 30 字、evidence ≤ 40 字、visualHint ≤ 30 字、notes ≤ 50 字；',
+      '· points 每页 2–3 条，单条 text ≤ 18 字、detail ≤ 40 字；',
+      '· elements 每页最多 5 个，且只在布局确实需要结构图时给出；其它页面一律 "elements":[]；',
+      '· chart 仅 chart / dashboard 布局给出，其余一律 null；design 只写四个枚举短值。',
+      '宁可内容精炼，也绝不能写到一半停住：必须一次性输出完整、闭合的 JSON，',
+      '最后一项写完后立刻输出 ]} 结束，不要在末尾追加任何解释文字。',
+      '每页建议再给出 3–5 个 blocks 位置骨架（只写 kind 与 x/y/w/h，不写文字），',
+      '让用户能在网页里直接拖动这些块；导出 PPTX 会使用完全相同的坐标。',
       `只输出一个形如下例的 JSON 对象（slides 数组长度必须恰好为 ${batch.length}）：`,
       '{"slides":[{"outlineId":"<对应大纲 id>","layout":"content","title":"页面标题","subtitle":"",' +
       '"points":[{"text":"要点","detail":"说明"}],"evidence":"","visualHint":"","notes":"","chapter":"",' +
       '"design":{"emphasis":"balanced","decoration":"minimal","density":"normal","alignment":"left"},' +
-      '"elements":[],"chart":null}]}',
+      '"elements":[],"chart":null,' +
+      '"blocks":[{"kind":"title","x":0.067,"y":0.15,"w":0.867,"h":0.10},' +
+      '{"kind":"card","x":0.067,"y":0.32,"w":0.42,"h":0.20},' +
+      '{"kind":"card","x":0.513,"y":0.32,"w":0.42,"h":0.20}]}]}',
     ].join('\n'),
     [
       '【整份 PPT 需求】', compact({
@@ -141,9 +159,10 @@ export function buildSlidesPrompt({ meta = {}, outline = [], batch = [], existin
       }),
       '\n【本批大纲（必须逐条对应）】', compact(outlineBrief),
       '\n【已有页面标题（可沿用衔接，不要照抄内容）】', compact(existing),
-      '\n【完整大纲顺序（仅作上下文）】', compact(outline.map((o) => ({ id: o.id, title: o.title })), 2500),
+      '\n【完整大纲顺序（仅作上下文）】', compact(outline.map((o) => ({ id: o.id, title: o.title })), 1800),
     ].join('\n'),
-    3200,
+    // 2 页/批 + 每页 3–5 个位置骨架，仍留足余量给闭合 JSON。
+    3300,
   );
 }
 

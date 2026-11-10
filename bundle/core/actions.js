@@ -13,6 +13,12 @@
 import * as D from './deck.js';
 import { runRealExport } from '../export/exporter.js';
 import { toAiError } from '../ai/errors.js';
+import {
+  normalizeDecorations, makeIconDecoration, makeImageDecoration,
+} from './decorations.js';
+import {
+  defaultBlocksFor, normalizeBlocks, clampBlock, findOverlaps,
+} from './blocks.js';
 
 function themeSummary(t) {
   const x = D.normalizeTheme(t);
@@ -34,7 +40,7 @@ function validateSlidePatch(patch, slideId) {
   return true;
 }
 
-export function createActions({ store, ai, platform, logbook }) {
+export function createActions({ store, ai, platform, logbook, library, imageProvider }) {
   const storage = platform.storage;
   let saveTimer = null;
   let toastTimer = null;
@@ -169,6 +175,272 @@ export function createActions({ store, ai, platform, logbook }) {
 
   // ---------------- 视图导航 ----------------
 
+  // ---------------- 资产库：主题沉淀 / 已完成 PPT 归档 ----------------
+
+  /** 启动时载入主题库与归档索引；失败不影响主流程。 */
+  async function loadLibrary() {
+    if (!library) return;
+    try {
+      const [customThemes, savedDecks] = await Promise.all([library.listThemes(), library.listDecks()]);
+      store.set({ customThemes, savedDecks }, 'render');
+    } catch { /* 存储不可用时保持空列表 */ }
+  }
+
+  function themeFromForm(id) {
+    if (D.THEME_IDS.includes(id)) return D.normalizeTheme(id);
+    const found = (store.get().customThemes || []).find((t) => t.id === id);
+    return found ? D.normalizeTheme(found) : D.normalizeTheme('business');
+  }
+
+  async function applySavedTheme(id) {
+    const t = (store.get().customThemes || []).find((x) => x.id === id);
+    if (!t) { toast('error', '找不到该主题'); return; }
+    return commitTheme(D.normalizeTheme(t), `应用已保存主题：${t.name}`);
+  }
+
+  async function removeSavedTheme(id) {
+    if (!library) return;
+    await library.removeTheme(id);
+    store.set({ customThemes: await library.listThemes() }, 'render');
+    toast('success', '已从主题库移除');
+  }
+
+  async function saveCurrentDeck() {
+    const deck = store.get().deck;
+    if (!deck || !library) return null;
+    await persist();
+    const entry = await library.saveDeck(deck);
+    store.set({ savedDecks: await library.listDecks() }, 'render');
+    return entry;
+  }
+
+  /** 编辑完成后：保存当前 PPT 并返回首页（首页可直接开始新 PPT 或打开存档）。 */
+  async function saveAndGoHome() {
+    const deck = store.get().deck;
+    if (!deck) { store.set({ view: 'home' }, 'render'); return; }
+    const entry = await saveCurrentDeck();
+    store.set({ view: 'home', hasDraft: true, modal: null, aiWarnings: [] }, 'render');
+    toast('success', `已保存「${entry?.title || '当前演示'}」，可在首页继续新建或重新打开`);
+  }
+
+  /** 导出弹窗里的「保存并开始新 PPT」。 */
+  async function saveAndStartNew() {
+    const deck = store.get().deck;
+    if (!deck) { store.set({ view: 'create', modal: null }, 'render'); return; }
+    const entry = await saveCurrentDeck();
+    const themeId = D.normalizeTheme(deck.theme).id;
+    store.set({
+      view: 'create', modal: null, aiWarnings: [],
+      form: { ...D.defaultMeta(), theme: themeId },
+      createError: '',
+    }, 'render');
+    toast('success', `已保存「${entry?.title || '当前演示'}」，现在可以创建新的 PPT`);
+  }
+
+  async function openSavedDeck(id) {
+    if (!library) return;
+    const raw = await library.loadDeck(id);
+    if (!raw) { toast('error', '该存档已不可用'); return; }
+    const deck = D.normalizeDeck(raw);
+    store.set({
+      deck, hasDraft: true, modal: null, aiWarnings: [],
+      view: deck.slides.length ? 'workspace' : deck.outline.length ? 'outline' : 'create',
+      selectedSlideId: deck.slides[0]?.id || null,
+    }, 'render');
+    await persist();
+    toast('success', `已打开「${deck.meta?.topic || '已保存的 PPT'}」`);
+  }
+
+  async function removeSavedDeck(id) {
+    if (!library) return;
+    await library.removeDeck(id);
+    store.set({ savedDecks: await library.listDecks() }, 'render');
+    toast('success', '已删除该存档');
+  }
+
+  // ---------------- 页面装饰：内置图标 / Anna AI 配图 ----------------
+
+  function withDecorations(deck, slideId, fn) {
+    const idx = deck.slides.findIndex((s) => s.id === slideId);
+    if (idx < 0) return null;
+    const slides = deck.slides.slice();
+    const current = normalizeDecorations(slides[idx].decorations);
+    // 单页局部更新：其他 slide 对象引用完全不变。
+    slides[idx] = { ...slides[idx], decorations: normalizeDecorations(fn(current) || current) };
+    return { ...deck, slides, updatedAt: Date.now() };
+  }
+
+  function insertedCount(slide) {
+    if (slide.freeLayout) {
+      return normalizeBlocks(slide.blocks).filter((b) => b.kind === 'icon' || b.kind === 'image').length;
+    }
+    return normalizeDecorations(slide.decorations).length;
+  }
+
+  function insertIcon(key) {
+    const state = store.get();
+    const deck = state.deck;
+    const slide = deck?.slides.find((s) => s.id === state.selectedSlideId);
+    if (!deck || !slide) { toast('warning', '请先选中一个页面'); return; }
+    addDecoration(deck, slide.id, makeIconDecoration(key, {
+      y: Math.min(0.72, 0.16 + insertedCount(slide) * 0.13),
+    }));
+    toast('success', slide.freeLayout
+      ? '已插入图标，可在画布上直接拖动'
+      : '已插入图标（页面设计标签可移除）');
+  }
+
+  function setImagePrompt(value) { store.setQuiet({ imagePrompt: String(value ?? '') }); }
+
+  async function generateImage() {
+    const state = store.get();
+    const deck = state.deck;
+    const prompt = String(state.imagePrompt || '').trim();
+    if (!deck || !state.selectedSlideId) { toast('warning', '请先选中一个页面'); return; }
+    if (!prompt) { toast('warning', '请先描述想要的配图内容'); return; }
+    if (!imageProvider) { toast('error', '当前环境没有可用的配图能力'); return; }
+    const res = await run('正在生成配图', () => imageProvider.generate({ prompt }));
+    if (!res) return;
+    const slide = deck.slides.find((s) => s.id === state.selectedSlideId);
+    if (!slide) return;
+    addDecoration(deck, slide.id, makeImageDecoration(res.src, { caption: prompt.slice(0, 40) }));
+    setImagePrompt('');
+    toast(res.mock
+      ? '已插入演示配图（Mock 模式，零 CU）'
+      : `已生成并插入配图${res.quotaUsed ? `，消耗 ${res.quotaUsed} CU` : '，实际扣费请查看顶栏 CU 余额'}`);
+  }
+
+  function removeDecoration(id) {
+    const state = store.get();
+    const deck = state.deck;
+    const slide = deck?.slides.find((s) => s.id === state.selectedSlideId);
+    if (!deck || !slide) return;
+    const next = slide.freeLayout
+      ? withBlocks(deck, slide.id, (cur) => cur.filter((b) => b.id !== id))
+      : withDecorations(deck, slide.id, (cur) => cur.filter((d) => d.id !== id));
+    if (next) applyDeck(next, 'render');
+  }
+
+  function dismissWarnings() { store.set({ aiWarnings: [] }, 'render'); }
+
+  // ---------------- 自由布局：网页可拖动块（与 PPTX 共用坐标） ----------------
+
+  function withBlocks(deck, slideId, fn) {
+    const idx = deck.slides.findIndex((s) => s.id === slideId);
+    if (idx < 0) return null;
+    const slides = deck.slides.slice();
+    const current = normalizeBlocks(slides[idx].blocks);
+    // 只替换目标 slide 对象，其它页引用完全不变。
+    slides[idx] = { ...slides[idx], blocks: normalizeBlocks(fn(current) || current) };
+    return { ...deck, slides, updatedAt: Date.now() };
+  }
+
+  /** 开启/关闭自由布局。首次开启时按当前页内容生成一套默认坐标，绝不空白。 */
+  function toggleFreeLayout() {
+    const state = store.get();
+    const deck = state.deck;
+    const id = state.selectedSlideId;
+    const slide = deck?.slides.find((s) => s.id === id);
+    if (!deck || !slide) { toast('warning', '请先选中一个页面'); return; }
+    const enable = slide.freeLayout !== true;
+    const idx = deck.slides.findIndex((s) => s.id === id);
+    const slides = deck.slides.slice();
+
+    if (enable) {
+      // 默认块复刻自动构图（英文眉标 / 短横线 / 编号卡片 / 数据条），
+      // 并把已有图标与配图一起转成可拖动块，避免「图标不能自由布局」。
+      const base = (slide.blocks || []).length
+        ? normalizeBlocks(slide.blocks)
+        : defaultBlocksFor(slide);
+      const decoBlocks = normalizeDecorations(slide.decorations)
+        .filter((d) => !base.some((b) => b.id === d.id))
+        .map(decorationToBlock);
+      slides[idx] = {
+        ...slide,
+        freeLayout: true,
+        blocks: normalizeBlocks([...base, ...decoBlocks]),
+        decorations: [], // 已迁移为块，避免重复渲染
+      };
+    } else {
+      // 关闭时把图标/配图块还原成装饰，保证来回切换不丢素材。
+      const blocks = normalizeBlocks(slide.blocks);
+      const decos = normalizeDecorations(
+        blocks.filter((b) => b.kind === 'icon' || b.kind === 'image').map(blockToDecoration),
+      );
+      slides[idx] = {
+        ...slide, freeLayout: false, decorations: decos,
+        blocks: blocks.filter((b) => b.kind !== 'icon' && b.kind !== 'image'),
+      };
+    }
+    store.set({ selectedBlockId: null }, 'status');
+    applyDeck({ ...deck, slides }, 'render');
+    toast('success', enable
+      ? '已开启自由布局：页面元素、图标与配图都可直接拖动，样式与之前保持一致'
+      : '已恢复自动构图（拖动过的坐标与素材都已保留）');
+  }
+
+  /** 把一个装饰（图标/配图）转换成可拖动块；自由布局下图标与图片也能一起拖。 */
+  function decorationToBlock(d) {
+    return {
+      id: d.id,
+      kind: d.kind === 'image' ? 'image' : 'icon',
+      x: d.x, y: d.y, w: d.w, h: d.h,
+      text: d.caption || d.label || '', glyph: d.glyph, src: d.src,
+      tone: 'plain',
+    };
+  }
+
+  function blockToDecoration(b) {
+    return {
+      id: b.id, kind: b.kind === 'image' ? 'image' : 'icon', icon: 'star',
+      glyph: b.glyph || '★', label: b.text || '图标', caption: b.text || '',
+      src: b.src, x: b.x, y: b.y, w: b.w, h: b.h,
+    };
+  }
+
+  /** 插入装饰时自动分流：自由布局下进 blocks（可拖动），否则进 decorations。 */
+  function addDecoration(deck, slideId, deco) {
+    const slide = deck.slides.find((s) => s.id === slideId);
+    if (!slide) return;
+    const next = slide.freeLayout
+      ? withBlocks(deck, slideId, (cur) => [...cur, decorationToBlock(deco)])
+      : withDecorations(deck, slideId, (cur) => [...cur, deco]);
+    if (next) applyDeck(next, 'render');
+  }
+
+  /** 重新按当前内容生成一套整齐的默认坐标（会覆盖手动拖动结果，可撤销）。 */
+  function resetBlocks() {
+    const state = store.get();
+    const deck = state.deck;
+    const id = state.selectedSlideId;
+    const slide = deck?.slides.find((s) => s.id === id);
+    if (!deck || !slide) return;
+    pushUndo({ kind: 'slide', slideId: id, before: D.copy(slide), label: '重置自由布局' });
+    const next = withBlocks(deck, id, () => defaultBlocksFor(slide));
+    if (next) applyDeck(next, 'render');
+    toast('success', '已按当前内容重新排布，可继续拖动微调');
+  }
+
+  /**
+   * 拖拽/缩放结束时一次性提交坐标。
+   * before 是 pointerdown 时的整页快照，用于「一次拖动 = 一条撤销记录」。
+   */
+  function setBlockRect({ slideId, blockId, rect: r, before } = {}) {
+    const deck = store.get().deck;
+    const slide = deck?.slides.find((s) => s.id === slideId);
+    if (!deck || !slide || !blockId || !r) return;
+    if (before) pushUndo({ kind: 'slide', slideId, before, label: '拖动调整页面布局' });
+    const next = withBlocks(deck, slideId, (list) => list.map((b) => (
+      b.id === blockId ? clampBlock({ ...b, x: r.x, y: r.y, w: r.w, h: r.h }) : b
+    )));
+    if (!next) return;
+    applyDeck(next, 'visual');
+    const overlaps = findOverlaps(normalizeBlocks(next.slides.find((s) => s.id === slideId).blocks), 0.2);
+    if (overlaps.length) toast('warning', `有 ${overlaps.length} 处元素重叠，导出前建议拖动错开`);
+  }
+
+  function selectBlock(id) { store.set({ selectedBlockId: id || null }, 'status'); }
+
   function goHome() { store.set({ view: 'home' }, 'render'); }
   function startCreate() {
     const state = store.get();
@@ -202,7 +474,9 @@ export function createActions({ store, ai, platform, logbook }) {
   }
 
   function setFormTheme(id) {
-    if (!D.THEME_IDS.includes(id)) return;
+    const isPreset = D.THEME_IDS.includes(id);
+    const isSaved = (store.get().customThemes || []).some((t) => t.id === id);
+    if (!isPreset && !isSaved) return;
     store.set({ form: { ...store.get().form, theme: id } }, 'render');
   }
 
@@ -235,7 +509,8 @@ export function createActions({ store, ai, platform, logbook }) {
     meta.pageCount = Math.max(3, Math.min(20, Number(meta.pageCount) || 8));
     meta.topic = String(meta.topic).trim();
     const deck = D.createDeck(meta);
-    deck.theme = D.normalizeTheme(theme);
+    // 主题可以是内置预设，也可以是主题库里沉淀过的自定义主题。
+    deck.theme = themeFromForm(theme);
     store.set({ deck, createError: '', hasDraft: true }, 'render');
 
     const res = await run('正在生成大纲', () => ai.generateOutline({ meta: deck.meta }));
@@ -275,9 +550,17 @@ export function createActions({ store, ai, platform, logbook }) {
     );
     if (!res) return;
     const next = D.mergeGeneratedSlides(deck, res.slides);
-    store.set({ deck: next, view: 'workspace', selectedSlideId: next.slides[0]?.id || null, propTab: 'content' }, 'render');
+    const warnings = Array.isArray(res.summary?.warnings) ? res.summary.warnings : [];
+    store.set({
+      deck: next, view: 'workspace', selectedSlideId: next.slides[0]?.id || null,
+      propTab: 'content', aiWarnings: warnings,
+    }, 'render');
     await persist();
-    toast('success', `已生成 ${next.slides.length} 页内容`);
+    if (warnings.length) {
+      toast('warning', `已生成 ${next.slides.length} 页；${warnings.map((w) => w.message).join('；')}`);
+    } else {
+      toast('success', `已生成 ${next.slides.length} 页内容`);
+    }
   }
 
   async function regenerateSlide(slideId) {
@@ -444,7 +727,7 @@ export function createActions({ store, ai, platform, logbook }) {
     store.setQuiet({ themeDraft: D.normalizeTheme({ ...cur, [field]: v, id: 'custom' }) });
   }
 
-  async function commitTheme(nextTheme, label, instruction = '') {
+  async function commitTheme(nextTheme, label, instruction = '', saveToLibrary = true) {
     const deck = store.get().deck;
     if (!deck) return;
     const before = D.normalizeTheme(deck.theme);
@@ -457,12 +740,20 @@ export function createActions({ store, ai, platform, logbook }) {
       lastEdit: { kind: 'theme', label, instruction, before: themeSummary(before), after: themeSummary(after) },
     }, 'render');
     await persist();
-    toast('success', `已应用主题「${after.name}」，所有页面内容保持不变`);
+    // 沉淀 AI 生成 / 手动微调的自定义主题，供后续 PPT 直接选用；内置预设不入库。
+    if (library && saveToLibrary) {
+      try {
+        await library.saveTheme(after);
+        store.set({ customThemes: await library.listThemes() }, 'render');
+      } catch { /* 主题库写入失败不影响主流程 */ }
+    }
+    toast('success', `已应用主题「${after.name}」${saveToLibrary && library ? '并保存到主题库' : ''}，所有页面内容保持不变`);
   }
 
   function setTheme(id) {
     if (!D.THEME_IDS.includes(id)) return;
-    return commitTheme(D.normalizeTheme(id), `切换预设主题：${D.THEME_PRESETS[id].name}`);
+    // 内置预设无需重复沉淀；AI 生成与手动微调的主题才进主题库。
+    return commitTheme(D.normalizeTheme(id), `切换预设主题：${D.THEME_PRESETS[id].name}`, '', false);
   }
 
   async function applyThemeByInstruction() {
@@ -631,5 +922,12 @@ export function createActions({ store, ai, platform, logbook }) {
     editField, selectSlide, slideAdd, slideDel, slideMove, pointAdd, pointDel,
     exportPptx, closeModal, askResetDraft, resetDraft, persist, toast,
     setModel, refreshQuota,
+    // 资产库 / 归档
+    loadLibrary, applySavedTheme, removeSavedTheme,
+    saveAndGoHome, saveAndStartNew, openSavedDeck, removeSavedDeck,
+    // 页面装饰
+    insertIcon, setImagePrompt, generateImage, removeDecoration, dismissWarnings,
+    // 自由布局（可拖动块）
+    toggleFreeLayout, resetBlocks, setBlockRect, selectBlock,
   };
 }
