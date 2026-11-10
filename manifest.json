@@ -1,0 +1,28 @@
+{
+  "schema": 4,
+  "tags": ["slidecraft-ai"],
+  "ui": {
+    "bundle": {
+      "format": "static-spa",
+      "entry": "index.html",
+      "external_origins": []
+    },
+    "views": [
+      {
+        "name": "main",
+        "title": "SlideCraft AI",
+        "default": true,
+        "default_size": { "w": 1360, "h": 860 },
+        "min_size": { "w": 980, "h": 620 },
+        "max_size": { "w": 1920, "h": 1200 }
+      }
+    ],
+    "csp_overrides": {},
+    "state_merge": "last_writer_wins"
+  },
+  "dev": {
+    "fixtures": ["fixtures/*.jsonl"],
+    "seed_storage": {},
+    "user_id": 1
+  }
+}

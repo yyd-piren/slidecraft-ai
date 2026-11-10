@@ -1,0 +1,15 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "tool-dev-slidecraft-ai"
+version = "0.1.0"
+description = "Executa for the slidecraft-ai Anna App"
+requires-python = ">=3.10"
+
+[project.scripts]
+"tool-dev-slidecraft-ai" = "slidecraft_ai_plugin:main"
+
+[tool.setuptools]
+py-modules = ["slidecraft_ai_plugin"]

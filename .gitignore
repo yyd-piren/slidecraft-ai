@@ -1,0 +1,30 @@
+# Anna 本地开发缓存与凭据（绝不入库）
+.anna/
+.anna-app/
+credentials.json
+credentials.*.json
+*.pem
+*.key
+*.p12
+*.pfx
+.env
+.env.*
+*secret*
+*token*.json
+
+# 阶段基线备份（保留在磁盘用于回滚，不纳入版本控制）
+.backup/
+
+# Python Executa 脚手架产物（保留源码，忽略环境）
+__pycache__/
+*.py[cod]
+.venv/
+*.egg-info/
+
+# WorkBuddy 工作区记忆（本地调研记录，不入库）
+.workbuddy/
+
+# 通用
+node_modules/
+.DS_Store
+Thumbs.db

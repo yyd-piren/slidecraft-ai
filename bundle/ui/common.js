@@ -1,0 +1,250 @@
+/** 顶栏、浮层与通用表单控件。所有文案与状态都由 store 驱动。 */
+import { esc } from '../render/layouts.js';
+import {
+  THEME_PRESETS, THEME_IDS, DECORATION_STYLES, LAYOUT_LABELS,
+} from '../core/deck.js';
+import { THEMES } from '../render/themes.js';
+import { THEME_PROMPT_EXAMPLES } from '../ai/mock.js';
+
+const STEPS = [
+  { key: 'create', label: '创建任务' },
+  { key: 'outline', label: '编辑大纲' },
+  { key: 'workspace', label: '编辑与导出' },
+];
+
+const SAVE_LABEL = { idle: '本地草稿', saving: '正在保存…', saved: '已保存', error: '保存失败' };
+const HOST_LABEL = { connecting: '连接中…', host: 'Anna 宿主', standalone: '独立预览' };
+
+export function selectHTML(items, value, bind, cls = 'select') {
+  return `<select class="${cls}" data-bind="${esc(bind)}">${items
+    .map((it) => {
+      const v = typeof it === 'string' ? it : it.value;
+      const label = typeof it === 'string' ? it : it.label;
+      return `<option value="${esc(v)}"${v === value ? ' selected' : ''}>${esc(label)}</option>`;
+    })
+    .join('')}</select>`;
+}
+
+export function topbarHTML(state) {
+  const active = STEPS.findIndex((s) => s.key === state.view);
+  const steps = STEPS.map(
+    (s, i) => `${i ? '<span class="step__sep">/</span>' : ''}
+      <span class="step${i === active ? ' step--active' : ''}">
+        <span class="step__num">${i + 1}</span>${s.label}
+      </span>`,
+  ).join('');
+  const themeName = state.deck ? THEMES[state.deck.theme?.id]?.name || state.deck.theme?.name || '自定义' : '';
+  return `<header class="topbar">
+    <div class="brand"><span class="brand__logo">S</span>SlideCraft AI</div>
+    <nav class="steps">${steps}</nav>
+    <div class="topbar__right">
+      ${state.deck ? `<button class="btn btn--secondary btn--sm" data-action="theme:open">全局主题 · ${esc(themeName)}</button>` : ''}
+      <button class="btn btn--ghost btn--sm" data-action="undo:last"${state.undoStack.length ? '' : ' disabled'} title="撤销最近一次修改">↶ 撤销</button>
+      <span class="badge badge--mock">演示模式 · 未接入 AI</span>
+      <span class="save" data-save-state data-state="${state.saveState}">${SAVE_LABEL[state.saveState] || ''}</span>
+      <span class="host" data-host-state title="${esc(state.hostReason || '')}">${HOST_LABEL[state.host] || ''}</span>
+    </div>
+  </header>`;
+}
+
+export function shellHTML(state, body) {
+  return `${topbarHTML(state)}<div class="workarea">${body}</div>`;
+}
+
+// ---------------- 浮层 ----------------
+
+function exportModal(m) {
+  const r = m.result;
+  return `<div class="modal-backdrop"><div class="modal">
+    <div class="modal__head">导出 PPTX <span class="badge badge--mock">演示模式</span></div>
+    <div class="modal__body">
+      <div class="row row--between"><span>${esc(m.stage)}</span><b>${m.percent}%</b></div>
+      <div class="progress"><div class="progress__bar" style="width:${m.percent}%"></div></div>
+      <ul class="log-list">${(m.steps || []).map((s) => `<li>${esc(s)}</li>`).join('')}</ul>
+      ${r ? `<div class="result-box" style="margin-top:14px">
+        <b>演示模式 — 本次未生成真实文件</b><br />
+        阶段 3 将使用文件名：<b>${esc(r.filename)}</b><br />
+        共 ${r.pages} 页 · 主题：${esc(r.theme)} · 布局：${esc((r.layouts || []).join('、'))}<br />
+        ${esc(r.message)}<br />
+        本次没有调用 AI，也没有调用 upload.inline，CU 消耗为 0。
+      </div>` : ''}
+    </div>
+    <div class="modal__foot"><button class="btn btn--secondary" data-action="modal:close">关闭</button></div>
+  </div></div>`;
+}
+
+function resetModal() {
+  return `<div class="modal-backdrop"><div class="modal">
+    <div class="modal__head">清除草稿</div>
+    <div class="modal__body">确定清除当前保存的草稿吗？已保存的大纲与页面内容会被移除，且无法撤销。</div>
+    <div class="modal__foot">
+      <button class="btn btn--secondary" data-action="modal:close">取消</button>
+      <button class="btn btn--danger" data-action="draft:reset-confirm">确认清除</button>
+    </div>
+  </div></div>`;
+}
+
+function addSlideModal(state) {
+  const d = state.addDraft || { instruction: '', position: 'after' };
+  return `<div class="modal-backdrop"><div class="modal">
+    <div class="modal__head">按描述新增页面 <span class="badge badge--mock">演示模式</span></div>
+    <div class="modal__body">
+      <div class="field">
+        <label class="field__label">页面描述</label>
+        <textarea class="textarea" data-draft-bind="add.instruction" placeholder="例如：新增一页横向时间轴，展示项目从立项到上线的五个阶段">${esc(d.instruction)}</textarea>
+        <span class="field__hint">AI 会按描述生成标题、内容、布局与结构化元素（本地 Mock）</span>
+      </div>
+      <div class="field" style="margin-top:14px">
+        <label class="field__label">插入位置</label>
+        <select class="select" data-draft-bind="add.position">
+          <option value="after"${d.position === 'after' ? ' selected' : ''}>当前页之后</option>
+          <option value="start"${d.position === 'start' ? ' selected' : ''}>放在最前面</option>
+          <option value="end"${d.position === 'end' ? ' selected' : ''}>放在最后面</option>
+        </select>
+      </div>
+      <div class="hint-box" style="margin-top:14px">这是与「重新生成页面」「按描述修改页面」并列的第三个独立入口：它会创建<strong>新页面</strong>并同步新增大纲条目。</div>
+    </div>
+    <div class="modal__foot">
+      <button class="btn btn--secondary" data-action="modal:close">取消</button>
+      <button class="btn btn--primary" data-action="add:apply">生成并插入新页面</button>
+    </div>
+  </div></div>`;
+}
+
+export function compareTable(state) {
+  const e = state.lastEdit;
+  if (!e) return '';
+  if (e.kind === 'theme') {
+    const rows = [
+      ['主题名称', e.before.name, e.after.name],
+      ['背景色', e.before.background, e.after.background],
+      ['主色', e.before.primaryColor, e.after.primaryColor],
+      ['标题字号', `${e.before.titleSize}px`, `${e.after.titleSize}px`],
+      ['装饰风格', e.before.decorationStyle, e.after.decorationStyle],
+    ];
+    return `<div class="prop-title" style="margin-top:16px">上一次主题修改 · 前后对比</div>
+      <table class="compare"><thead><tr><th>字段</th><th>修改前</th><th>修改后</th></tr></thead>
+      <tbody>${rows.map((r) => `<tr><td>${esc(r[0])}</td><td>${esc(r[1])}</td><td><b>${esc(r[2])}</b></td></tr>`).join('')}</tbody></table>`;
+  }
+  if (e.kind === 'slide') {
+    const rows = [
+      ['标题', e.before.title, e.after.title],
+      ['布局', LAYOUT_LABELS[e.before.layout] || e.before.layout, LAYOUT_LABELS[e.after.layout] || e.after.layout],
+      ['要点数', e.before.points, e.after.points],
+      ['页面元素', e.before.elements, e.after.elements],
+      ['连线数', e.before.connectors, e.after.connectors],
+      ['文字量', `${e.before.chars} 字`, `${e.after.chars} 字`],
+    ];
+    return `<div class="prop-title" style="margin-top:16px">上一次页面修改 · 前后对比</div>
+      <div class="tiny" style="margin-bottom:6px">指令：${esc(e.instruction || '')}</div>
+      <table class="compare"><thead><tr><th>字段</th><th>修改前</th><th>修改后</th></tr></thead>
+      <tbody>${rows.map((r) => `<tr><td>${esc(r[0])}</td><td>${esc(r[1])}</td><td><b>${esc(r[2])}</b></td></tr>`).join('')}</tbody></table>`;
+  }
+  return '';
+}
+
+const FONT_OPTIONS = [
+  "'Microsoft YaHei', 'PingFang SC', 'Hiragino Sans GB', 'Segoe UI', sans-serif",
+  "'SimSun', 'Songti SC', serif",
+  "'Segoe UI', Arial, sans-serif",
+];
+
+function themeModal(state) {
+  const t = state.themeDraft || {};
+  const colors = [
+    ['background', '背景色'], ['primaryColor', '主色'], ['secondaryColor', '辅助色'],
+    ['accentColor', '强调色'], ['titleColor', '标题色'], ['bodyColor', '正文色'],
+  ];
+  return `<div class="modal-backdrop"><div class="modal modal--wide">
+    <div class="modal__head">全局主题设计 <span class="badge badge--mock">演示模式</span></div>
+    <div class="modal__body modal__body--scroll">
+      <div class="prop-title">预设主题</div>
+      <div class="preset-row">${THEME_IDS.map((id) => {
+        const p = THEME_PRESETS[id];
+        const active = state.deck?.theme?.id === id;
+        return `<button class="preset${active ? ' preset--active' : ''}" data-action="theme:preset" data-id="${id}">
+          <span class="preset__swatch">${p.swatch.map((c) => `<i style="background:${c}"></i>`).join('')}</span>
+          <span><b>${esc(p.name)}</b><small>${esc(p.caption)}</small></span>
+        </button>`;
+      }).join('')}</div>
+
+      <div class="prop-title" style="margin-top:18px">用自然语言描述整体风格</div>
+      <textarea class="textarea" data-draft-bind="theme.prompt" placeholder="例如：将整套 PPT 改为深色科技风，采用深蓝背景和紫色点缀">${esc(state.themePrompt || '')}</textarea>
+      <div class="chips" style="margin-top:8px">${THEME_PROMPT_EXAMPLES.map(
+        (x, i) => `<button class="chip" data-action="theme:example" data-text="${esc(x)}">示例 ${i + 1}</button>`,
+      ).join('')}</div>
+      <div class="row" style="margin-top:8px">
+        <button class="btn btn--primary btn--sm" data-action="theme:generate">AI 生成并应用主题</button>
+        <span class="tiny">返回完整 Theme JSON，存入 deck.theme；不改变任何页面文字</span>
+      </div>
+
+      <div class="prop-title" style="margin-top:18px">手动微调</div>
+      <div class="color-grid">${colors.map(
+        ([key, label]) => `<label class="color-item"><span>${label}</span>
+          <input type="color" data-draft-bind="theme.${key}" value="${esc(t[key] || '#FFFFFF')}" /></label>`,
+      ).join('')}</div>
+      <div class="form-grid" style="margin-top:12px">
+        <div class="field"><label class="field__label">主题名称</label>
+          <input class="input" data-draft-bind="theme.name" value="${esc(t.name || '')}" /></div>
+        <div class="field"><label class="field__label">字体</label>
+          <select class="select" data-draft-bind="theme.fontFamily">${FONT_OPTIONS.map(
+            (f, i) => `<option value="${esc(f)}"${(t.fontFamily || FONT_OPTIONS[0]) === f ? ' selected' : ''}>${['微软雅黑 / 苹方', '宋体 / 衬线', 'Segoe UI'][i]}</option>`,
+          ).join('')}</select></div>
+        <div class="field"><label class="field__label">标题字号</label>
+          <input class="input" type="number" min="18" max="56" data-draft-bind="theme.titleSize" value="${Number(t.titleSize) || 32}" /></div>
+        <div class="field"><label class="field__label">正文字号</label>
+          <input class="input" type="number" min="12" max="30" data-draft-bind="theme.bodySize" value="${Number(t.bodySize) || 19}" /></div>
+        <div class="field"><label class="field__label">页面间距</label>
+          <select class="select" data-draft-bind="theme.spacing">
+            ${['compact', 'normal', 'spacious'].map((v) => `<option value="${v}"${t.spacing === v ? ' selected' : ''}>${({ compact: '紧凑', normal: '标准', spacious: '宽松' })[v]}</option>`).join('')}
+          </select></div>
+        <div class="field"><label class="field__label">圆角</label>
+          <input class="input" type="number" min="0" max="20" data-draft-bind="theme.borderRadius" value="${Number(t.borderRadius ?? 6)}" /></div>
+        <div class="field span-2"><label class="field__label">装饰风格</label>
+          <select class="select" data-draft-bind="theme.decorationStyle">
+            ${DECORATION_STYLES.map((v) => `<option value="${v}"${t.decorationStyle === v ? ' selected' : ''}>${({ minimal: '极简', rules: '细线分隔', grid: '网格', blocks: '卡片描边', tech: '科技角标' })[v]}</option>`).join('')}
+          </select></div>
+      </div>
+      <div class="row" style="margin-top:12px">
+        <button class="btn btn--secondary btn--sm" data-action="theme:apply-draft">应用自定义主题</button>
+        <button class="btn btn--ghost btn--sm" data-action="undo:last"${state.undoStack.length ? '' : ' disabled'}>↶ 撤销上次修改</button>
+      </div>
+      ${compareTable(state)}
+    </div>
+    <div class="modal__foot"><button class="btn btn--secondary" data-action="modal:close">关闭</button></div>
+  </div></div>`;
+}
+
+export function overlayHTML(state) {
+  let html = '';
+  if (state.toast) html += `<div class="toast toast--${esc(state.toast.type)}">${esc(state.toast.text)}</div>`;
+  if (state.modal) {
+    const type = state.modal.type;
+    if (type === 'export') html += exportModal(state.modal);
+    else if (type === 'confirm-reset') html += resetModal();
+    else if (type === 'add-slide') html += addSlideModal(state);
+    else if (type === 'theme') html += themeModal(state);
+  }
+  if (state.busy) html += `<div class="busy"><div class="busy__card"><span class="spinner"></span>${esc(state.busy)}</div></div>`;
+  return html;
+}
+
+/** 更新顶栏局部状态，不重建 #app（避免打断输入焦点）。 */
+export function patchStatus(state) {
+  const save = document.querySelector('[data-save-state]');
+  if (save) { save.textContent = SAVE_LABEL[state.saveState] || ''; save.dataset.state = state.saveState; }
+  const host = document.querySelector('[data-host-state]');
+  if (host) { host.textContent = HOST_LABEL[state.host] || ''; host.title = state.hostReason || ''; }
+  const err = document.querySelector('[data-create-error]');
+  if (err) err.textContent = state.createError || '';
+}
+
+/** 幻灯片画布固定 960×540，按容器宽度等比缩放；缩略图与大图共用同一渲染函数。 */
+export function fitSlides(root = document) {
+  root.querySelectorAll('.slide-frame').forEach((frame) => {
+    const slide = frame.querySelector('.slide');
+    if (!slide) return;
+    const k = frame.clientWidth / 960;
+    if (k > 0) slide.style.transform = `scale(${k})`;
+  });
+}
