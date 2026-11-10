@@ -249,13 +249,33 @@ a { color: var(--brand); text-decoration: none; }
 .figure__caption { font-size: 12px; color: var(--c-muted); text-align: center; padding: 0 20px; line-height: 1.5; }
 
 .sl-chart-wrap { display: grid; grid-template-columns: 1.3fr .8fr; gap: 34px; margin-top: 2px; }
-.sl-chart__plot { height: 226px; display: flex; gap: 18px; padding: 0 6px; border-bottom: 1px solid var(--c-line); }
-.sl-chart__col { flex: 1; height: 100%; display: flex; flex-direction: column; align-items: center; }
-.sl-chart__value { font-size: 13px; font-weight: 700; color: var(--c-text); margin-top: 4px; }
-.sl-chart__track { flex: 1; width: 100%; display: flex; align-items: flex-end; justify-content: center; }
-.sl-chart__bar { width: 56px; max-width: 70%; background: var(--c-brand); }
-.sl-chart__label { font-size: 12px; color: var(--c-muted); padding: 6px 0 0; height: 26px; }
+/* 柱状图与 PPTX 原生 clusteredBar 对齐：多系列分组柱、Y 轴刻度/网格线、底部图例、柱顶不写数值。 */
+.sl-chart { height: 226px; display: flex; flex-direction: column; }
+.sl-chart__plot { position: relative; flex: 1; min-height: 0; padding-left: 38px; border-bottom: 1px solid var(--c-line); }
+.sl-chart__grid, .sl-chart__cols { position: absolute; left: 38px; right: 0; top: 0; bottom: 0; }
+.sl-chart__gridline { position: absolute; left: 0; right: 0; border-top: 1px solid var(--c-line); opacity: .8; pointer-events: none; }
+.sl-chart__gridline span { position: absolute; left: -36px; top: -7px; width: 32px; text-align: right; font-size: 10px; color: var(--c-muted); }
+.sl-chart__cols { display: flex; gap: 12px; }
+.sl-chart__col { flex: 1; height: 100%; display: flex; align-items: flex-end; justify-content: center; }
+.sl-chart__bars { display: flex; align-items: flex-end; justify-content: center; gap: 3px; width: 100%; height: 100%; }
+.sl-chart__bar { flex: 1; max-width: 46px; min-width: 3px; background: var(--c-brand); border-radius: 2px 2px 0 0; }
+.sl-chart__bar--secondary { background: var(--c-brandDeep); }
+.sl-chart__bar--muted { background: var(--c-muted); }
+.sl-chart__labels { height: 26px; display: flex; gap: 12px; padding-left: 38px; }
+.sl-chart__label { flex: 1; text-align: center; font-size: 12px; color: var(--c-muted); padding-top: 6px; }
+.sl-chart__legend { height: 18px; display: flex; justify-content: center; align-items: center; gap: 18px; font-size: 10px; color: var(--c-muted); }
+.sl-chart__legend-item { display: inline-flex; align-items: center; }
+.sl-chart__swatch { width: 9px; height: 9px; border-radius: 2px; background: var(--c-brand); margin-right: 5px; }
+.sl-chart__swatch--secondary { background: var(--c-brandDeep); }
+.sl-chart__swatch--muted { background: var(--c-muted); }
 .sl-chart__note { font-size: 11px; color: var(--c-muted); margin-top: 8px; }
+/* line / pie 等非柱类型的简化回退，避免空白页。 */
+.sl-chart__plot--simple { display: flex; gap: 18px; padding: 0 6px; }
+.sl-chart__plot--simple .sl-chart__col { flex-direction: column; }
+.sl-chart__plot--simple .sl-chart__label { flex: none; width: 100%; height: 26px; }
+.sl-chart__track { flex: 1; width: 100%; display: flex; align-items: flex-end; justify-content: center; }
+.sl-chart__plot--simple .sl-chart__bar { width: 56px; max-width: 70%; }
+.sl-chart__value { font-size: 13px; font-weight: 700; color: var(--c-text); margin-top: 4px; }
 .sl-chart__aside .sl-points { gap: 12px; }
 .sl-chart__aside .sl-points__text { font-size: 15px; }
 .sl-chart__aside .sl-points__detail { font-size: 12px; }
@@ -363,7 +383,7 @@ a { color: var(--brand); text-decoration: none; }
 .dyn-metric__value { font-size: 32px; font-weight: 700; color: var(--c-brand); }
 .dyn-metric__label { font-size: 12px; color: var(--c-muted); margin-top: 4px; }
 .dyn-dash-chart { margin-top: 6px; }
-.dyn-dash-chart .sl-chart__plot { height: 128px; }
+.dyn-dash-chart .sl-chart { height: 128px; }
 
 /* 主题装饰 / 信息密度 / 视觉层级 */
 .slide[data-deco="rules"] .sl-rule { width: 100%; height: 1px; }

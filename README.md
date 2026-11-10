@@ -57,6 +57,7 @@ bundle/
     blocks.js                  自由布局块模型、默认构图、坐标 clamp 与重叠检测
     block-style.js             主题驱动的字号 / 配色规格（HTML px ↔ PPTX pt 共用）
     layout-spec.js             自动构图的几何规格（网页 / PPTX 唯一坐标来源）
+    chart-spec.js              图表系列 / 颜色 / 坐标轴 / 图例规格（网页 / PPTX 共用）
     decorations.js             页面装饰（内置图标 / AI 配图）数据层
     library.js                 主题库与已完成 PPT 归档（anna.storage）
   ai/
@@ -160,8 +161,8 @@ npx esbuild entry.js --bundle --format=esm --platform=browser --target=es2020 --
 ## 测试
 
 ```bash
-# 逻辑与渲染单测（120 项，含 HTML/PPTX 坐标与字号逐项比对、切换前后一致、timeline 同源规格）
-node <测试脚本>            # 阶段 2 的 24 项 + 阶段 2.5 的 14 项 + 阶段 3 的 12 项 + 阶段 4 的 23 项 + 真实输出/模型/动态布局/PPTX 排版 22 项 + 自由布局/样式/次数 21 项 + timeline 同源规格 4 项
+# 逻辑与渲染单测（123 项，含 HTML/PPTX 坐标与字号逐项比对、切换前后一致、timeline / 图表同源规格）
+node <测试脚本>            # 阶段 2 的 24 项 + 阶段 2.5 的 14 项 + 阶段 3 的 12 项 + 阶段 4 的 23 项 + 真实输出/模型/动态布局/PPTX 排版 22 项 + 自由布局/样式/次数 21 项 + timeline 同源 4 项 + 图表同源 3 项
 
 # 浏览器端到端（48 项，含自由布局拖拽、切换前后样式一致与调用次数不限；需先启动 anna-app dev --no-llm 与无头 Edge CDP）
 node <E2E 脚本>
@@ -251,6 +252,20 @@ Prompt 明确要求模型为每页输出 3–5 个 `blocks` **位置骨架**（�
 `timeline` 的轴线、圆点、标题、说明文字框全部由 `timelineCells(n)` 生成，HTML `layouts.js` 与 PPTX `pptx-layouts.js` / `drawStep()` 读同一份值；`styles.css` 只保留视觉样式、不再写死坐标。共享页眉页脚 `REGIONS` 也按 CDP 实测校准（标题框 41.6px 而非 48.6px 等），`evidence` 去掉 PPTX 里网页没有的 0.5pt 外框。同一轮还校准了 `title` 封面标题位置、`chart` 右侧要点区、`summary` 底部一句话（网页 `y≈0.57`，之前 PPTX 画在 `y≈0.72`）。CDP 实测 + `python-pptx` 解析的 12 布局偏差探测中，大偏差项从 36 降到 29。
 
 **已知边界**：`flowchart`（网页节点有 `01/02/03` 编号、PPTX 没有）、`architecture`（层内小卡片排布）、`dashboard`（指标卡与图表区）、`two-column / comparison`（列内文字起点）仍有结构级差异，需要把这几个布局也改造成 spec 驱动，属于后续独立工作；PowerPoint 与浏览器的字体度量差异（约 1–2px）无法完全消除。回归测试 `[14]` 已固化 timeline 的坐标、字号、无箭头、CSS 不写死坐标四项断言，防止再次漂移。
+
+## 阶段 4j：图表页的网页 / PPTX 一致性（PowerPoint 真实渲染验证）
+
+用 PowerPoint 打开导出的 PPTX 后，图表页仍有肉眼可见的差异。CDP 网页实测 + `slidep inspect` + PowerPoint COM 真实渲染三者对比后，定位到三个独立问题：
+
+| 项 | 修复前网页 | 修复前 PPTX |
+| --- | --- | --- |
+| 系列 | `nativeChart()` 只取 `series[0]`，**第二个系列的数据整组丢失** | 全部系列的双色分组柱 |
+| 样式 | 柱顶数值、无坐标轴 / 网格线 / 图例 | Y 轴 0–4500、水平网格线、底部图例、无数值标签 |
+| 右侧要点 | `chartBody` 硬编码 `slice(0, 2)`，只画 **2 条** | 3 条，且字号与行距都不同 |
+
+新增 `core/chart-spec.js` 统一：系列上限、`primary/secondary/muted` 颜色顺序、图例位置、`showValue:false`、坐标轴刻度算法（`chartAxis(4200) → top 4500 / step 500`，贴近 PowerPoint 自动轴）、图表区域坐标与侧栏字号行距。HTML `nativeChart()` 重写为多系列分组柱 + 网格刻度 + 图例，`chartBody` 改为 `slice(0, CHART.maxAsidePoints)`；PPTX `drawChart()` / `renderChart()` / `addPointList(opts)` 读同一份规格。非柱状类型（line / pie）网页仍用简化柱形表达，属已知边界。
+
+**验证方式升级**：本机 `C:\Program Files (x86)\Microsoft Office\root\Office16\POWERPNT.EXE` 可用，用 PowerPoint COM `Slide.Export(path, "PNG", 1280, 720)` 把导出 PPTX 真实渲染成图，与 CDP 网页截图并排比对，不再只依赖坐标数值。回归测试 `[15]` 固化系列数、坐标轴、图例、要点条数与 px→pt 字号断言。
 
 ## 后续阶段
 

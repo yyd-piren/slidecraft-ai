@@ -8,6 +8,7 @@ import { rect, REGIONS, grid, SLIDE_W, SLIDE_H, gapFor } from './pptx-coords.js'
 import { normalizeDecorations } from '../core/decorations.js';
 import { renderBlocksToPptx } from './pptx-blocks.js';
 import { TIMELINE, timelineCells, mixHex, pxToPt } from '../core/layout-spec.js';
+import { CHART } from '../core/chart-spec.js';
 import { addFittedText, addPointList } from './pptx-text.js';
 import {
   normalizeKind, drawCard, drawNode, drawConnector, drawLayer, drawStep,
@@ -228,9 +229,18 @@ function renderImageText(ctx) {
 function renderChart(ctx) {
   chrome(ctx, 'DATA', ctx.s.title);
   const { slide, theme, s, report } = ctx;
-  const chartBox = rect(0.06, 0.31, 0.57, 0.5);
+  const chartBox = rect(CHART.box.x, CHART.box.y, CHART.box.w, CHART.box.h);
   drawChart(slide, chartBox, { chart: s.chart || { labels: (s.points || []).slice(0, 4).map((p, i) => `阶段${i + 1}`), series: [{ name: s.title, values: [38, 56, 74, 91] }], type: 'bar' } }, theme);
-  addPointList(slide, (s.points || []).slice(0, 3), rect(0.6167, 0.3033, 0.3166, 0.5), theme, report);
+  // 侧栏要点按 core/chart-spec.js 的网页实测字号与行距，条数与网页一致。
+  const rowIn = CHART.aside.rowPx / 72;
+  addPointList(slide, (s.points || []).slice(0, CHART.maxAsidePoints),
+    rect(0.6167, 0.3033, 0.3166, 0.5), theme, report, {
+      rowH: rowIn * 0.82,
+      rowGap: rowIn * 0.18,
+      numPt: pxToPt(CHART.aside.numPx),
+      titlePt: pxToPt(CHART.aside.titlePx),
+      detailPt: pxToPt(CHART.aside.detailPx),
+    });
   evidence(ctx);
 }
 

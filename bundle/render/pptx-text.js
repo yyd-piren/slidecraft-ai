@@ -109,16 +109,17 @@ export function buildPointRuns(points, theme, baseSize) {
  * 编号（蓝色）/ 标题（粗体）/ 说明（灰色小字），条目之间保留明显留白。
  * 每条都是独立的原生文本框，方便在 PowerPoint 中单独编辑。
  */
-export function addPointList(slide, points, box, theme, reporter = null) {
+export function addPointList(slide, points, box, theme, reporter = null, opts = {}) {
   const list = (Array.isArray(points) ? points : []).filter((p) => p && (p.text || p.detail));
   if (!list.length) return;
 
   // 网页基准（960×540 画布换算为英寸）：编号列 24px、编号与文字间隔 14px、
   // 每条高 50px（标题 27.5px + 说明 22.5px）、条目间距 15px。
-  const NUM_W = 0.333;
-  const TEXT_GAP = 0.194;
-  const ROW_H = 0.694;
-  const ROW_GAP = 0.208;
+  // chart 页的侧栏字号与行距更紧凑，由 core/chart-spec.js 传入 opts 覆盖。
+  const NUM_W = opts.numW ?? 0.333;
+  const TEXT_GAP = opts.textGap ?? 0.194;
+  const ROW_H = opts.rowH ?? 0.694;
+  const ROW_GAP = opts.rowGap ?? 0.208;
 
   const n = list.length;
   const need = n * ROW_H + Math.max(0, n - 1) * ROW_GAP;
@@ -128,9 +129,9 @@ export function addPointList(slide, points, box, theme, reporter = null) {
   const numW = Math.min(NUM_W, box.w * 0.12);
   const textX = box.x + numW + TEXT_GAP * scale;
   const textW = Math.max(0.4, box.w - numW - TEXT_GAP * scale);
-  const numSize = Math.max(9, Math.round((theme.sizes.small + 2) * Math.min(1, scale + 0.15)));
-  const titleSize = Math.max(9, Math.round(theme.sizes.body * Math.min(1, scale + 0.15)));
-  const detailSize = Math.max(8, Math.round((theme.sizes.small + 1) * Math.min(1, scale + 0.15)));
+  const numSize = opts.numPt ?? Math.max(9, Math.round((theme.sizes.small + 2) * Math.min(1, scale + 0.15)));
+  const titleSize = opts.titlePt ?? Math.max(9, Math.round(theme.sizes.body * Math.min(1, scale + 0.15)));
+  const detailSize = opts.detailPt ?? Math.max(8, Math.round((theme.sizes.small + 1) * Math.min(1, scale + 0.15)));
 
   list.forEach((p, i) => {
     const y = box.y + i * (rowH + gap);

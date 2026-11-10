@@ -13,6 +13,7 @@ import { themeVars, isDarkBackground } from './themes.js';
 import { normalizeDecorations } from '../core/decorations.js';
 import { renderBlocksHTML } from './blocks-html.js';
 import { TIMELINE, timelineCells, pxX, pxY } from '../core/layout-spec.js';
+import { CHART, chartSeries, chartAxis } from '../core/chart-spec.js';
 import { normalizeTheme, toLayout, defaultDesign } from '../core/deck.js';
 import {
   normalizeKind, LAYOUT_MAIN_KIND, hasUsableElements, enrichElements,
@@ -76,21 +77,33 @@ function evidenceLine(text) {
 }
 
 function nativeChart(chart) {
-  const labels = Array.isArray(chart?.labels) ? chart.labels : [];
-  const values = Array.isArray(chart?.series?.[0]?.values) ? chart.series[0].values : [];
-  if (!labels.length || !values.length) return '<div class="sl-empty">（暂无图表数据）</div>';
-  const max = Math.max(1, ...values.map((v) => Number(v) || 0));
-  return `<div class="sl-chart">
-    <div class="sl-chart__plot">${labels
-      .map((label, i) => {
-        const v = Number(values[i]) || 0;
-        return `<div class="sl-chart__col">
-          <div class="sl-chart__value">${v}</div>
-          <div class="sl-chart__track"><div class="sl-chart__bar" style="height:${Math.max(5, (v / max) * 100)}%"></div></div>
-          <div class="sl-chart__label">${esc(label)}</div>
-        </div>`;
-      })
-      .join('')}</div>
+  const { labels, series, type } = chartSeries(chart);
+  if (!labels.length || !series.length) return '<div class="sl-empty">（暂无图表数据）</div>';
+  // 非柱状类型暂沿用简化柱形表达（PPTX 侧会画对应的原生图表），柱状图才做逐项对齐。
+  if (type !== 'bar') {
+    const max = Math.max(1, ...series[0].values.map((v) => Number(v) || 0));
+    return `<div class="sl-chart"><div class="sl-chart__plot sl-chart__plot--simple">${labels.map((label, i) => {
+      const v = Number(series[0].values[i]) || 0;
+      return `<div class="sl-chart__col"><div class="sl-chart__track"><div class="sl-chart__bar" style="height:${Math.max(5, (v / max) * 100)}%"></div></div><div class="sl-chart__label">${esc(label)}</div></div>`;
+    }).join('')}</div></div>`;
+  }
+  const { top, ticks } = chartAxis(series.flatMap((s) => s.values));
+  const grid = ticks.map((t) => `<div class="sl-chart__gridline" style="bottom:${((t / top) * 100).toFixed(3)}%"><span>${t}</span></div>`).join('');
+  const cols = labels.map((label, i) => `<div class="sl-chart__col" title="${esc(label)}">
+      <div class="sl-chart__bars">${series.map((s) => {
+    const v = Number(s.values[i]) || 0;
+    return `<div class="sl-chart__bar sl-chart__bar--${s.color}" style="height:${Math.max(2, (v / top) * 100).toFixed(3)}%" title="${esc(s.name)}：${v}"></div>`;
+  }).join('')}</div>
+    </div>`).join('');
+  const labelRow = labels.map((l) => `<div class="sl-chart__label">${esc(l)}</div>`).join('');
+  const legend = series.map((s) => `<span class="sl-chart__legend-item"><i class="sl-chart__swatch sl-chart__swatch--${s.color}"></i>${esc(s.name)}</span>`).join('');
+  return `<div class="sl-chart" data-series="${series.length}">
+    <div class="sl-chart__plot">
+      <div class="sl-chart__grid">${grid}</div>
+      <div class="sl-chart__cols">${cols}</div>
+    </div>
+    <div class="sl-chart__labels">${labelRow}</div>
+    <div class="sl-chart__legend">${legend}</div>
     ${chart?.note ? `<div class="sl-chart__note">${esc(chart.note)}</div>` : ''}
   </div>`;
 }
@@ -155,7 +168,7 @@ function chartBody(s) {
     ${kicker('DATA')}${heading(s.title)}
     <div class="sl-chart-wrap">
       ${nativeChart(s.chart || fallback)}
-      <div class="sl-chart__aside">${bullets((s.points || []).slice(0, 2))}</div>
+      <div class="sl-chart__aside">${bullets((s.points || []).slice(0, CHART.maxAsidePoints))}</div>
     </div>
     ${evidenceLine(s.evidence)}
   </div>`;

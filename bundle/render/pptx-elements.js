@@ -8,6 +8,7 @@
 import { addFittedText } from './pptx-text.js';
 import { rect } from './pptx-coords.js';
 import { TIMELINE, pxToPt } from '../core/layout-spec.js';
+import { CHART, chartSeries } from '../core/chart-spec.js';
 import {
   normalizeKind, elementTitle, elementItems, elementText, elementValue,
 } from './element-utils.js';
@@ -192,20 +193,17 @@ export function drawImagePlaceholder(slide, box, el, theme, report) {
 
 /** 原生 PowerPoint 图表（不是图片）。数据格式按 PptxGenJS 官方定义。 */
 export function drawChart(slide, box, el, theme) {
-  const raw = el.chart || el;
-  const labels = Array.isArray(raw.labels) ? raw.labels.map(String) : ['阶段一', '阶段二', '阶段三', '阶段四'];
-  const series = Array.isArray(raw.series) && raw.series.length ? raw.series : [{ name: el.title || '数据', values: [38, 56, 74, 91] }];
-  const data = series.slice(0, 3).map((s, i) => ({
-    name: String(s.name || `系列 ${i + 1}`),
-    labels,
-    values: (Array.isArray(s.values) ? s.values : [1, 2, 3, 4]).map((v) => Number(v) || 0),
-  }));
-  const type = ['bar', 'line', 'pie', 'area', 'doughnut', 'scatter'].includes(String(raw.type)) ? String(raw.type) : 'bar';
+  // 与 HTML nativeChart() 共用 core/chart-spec.js 的系列口径、颜色顺序与图例开关。
+  const { labels, series, type } = chartSeries(el);
+  const palette = {
+    primary: theme.colors.primary, secondary: theme.colors.secondary, muted: theme.colors.muted,
+  };
+  const data = series.map((s) => ({ name: s.name, labels, values: s.values }));
   slide.addChart(type, data, {
     x: box.x, y: box.y, w: box.w, h: box.h,
-    chartColors: [theme.colors.primary, theme.colors.secondary, theme.colors.muted],
-    showLegend: type !== 'pie', legendPos: 'b',
-    showValue: false, catAxisLabelFontFace: theme.font, valAxisLabelFontFace: theme.font,
+    chartColors: series.map((s) => palette[s.color] || theme.colors.primary),
+    showLegend: type !== 'pie', legendPos: CHART.legendPos,
+    showValue: CHART.showValue, catAxisLabelFontFace: theme.font, valAxisLabelFontFace: theme.font,
     fontFace: theme.font, fontSize: theme.sizes.small + 2,
     showTitle: false,
   });
