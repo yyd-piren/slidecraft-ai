@@ -7,6 +7,7 @@
 import { rect, REGIONS, grid, SLIDE_W, SLIDE_H, gapFor } from './pptx-coords.js';
 import { normalizeDecorations } from '../core/decorations.js';
 import { renderBlocksToPptx } from './pptx-blocks.js';
+import { TIMELINE, timelineCells, mixHex, pxToPt } from '../core/layout-spec.js';
 import { addFittedText, addPointList } from './pptx-text.js';
 import {
   normalizeKind, drawCard, drawNode, drawConnector, drawLayer, drawStep,
@@ -61,8 +62,8 @@ function evidence(ctx) {
   const { slide, theme, s, report } = ctx;
   if (!String(s.evidence || '').trim()) return;
   const box = rect(REGIONS.evidence.x, REGIONS.evidence.y, REGIONS.evidence.w, REGIONS.evidence.h);
-  // 与网页 .sl-evidence 一致：中性浅灰底、细边框、左侧 3px 蓝色竖条、蓝色标签 + 灰色正文。
-  slide.addShape('rect', { ...box, fill: { color: theme.colors.surface }, line: { color: theme.colors.line, width: 0.5 } });
+  // 网页 .sl-evidence 只有左侧 3px 竖线，没有整体外框；这里保持一致。
+  slide.addShape('rect', { ...box, fill: { color: theme.colors.surface }, line: { color: theme.colors.surface, width: 0 } });
   slide.addShape('rect', {
     x: box.x, y: box.y, w: 0.042, h: box.h,
     fill: { color: theme.colors.primary }, line: { color: theme.colors.primary, width: 0 },
@@ -142,7 +143,7 @@ function renderTitle(ctx) {
     fontSize: theme.sizes.small + 2, fontFace: theme.font, color: theme.colors.muted, bold: true,
   }, report);
   slide.addShape('rect', { ...rect(0.07, 0.36, 0.05, 0.008), fill: { color: theme.colors.primary }, line: { color: theme.colors.primary, width: 0 } });
-  addFittedText(slide, s.title || deck.meta?.topic || '演示主题', rect(0.07, 0.42, 0.62, 0.22), {
+  addFittedText(slide, s.title || deck.meta?.topic || '演示主题', rect(0.0667, 0.3685, 0.625, 0.1139), {
     fontSize: Math.round(theme.sizes.title * 1.55), fontFace: theme.font, color: theme.colors.title, bold: true, valign: 'mid',
   }, report);
   addFittedText(slide, s.subtitle || `${deck.meta?.purpose || ''} · ${deck.meta?.audience || ''}`, rect(0.07, 0.66, 0.6, 0.09), {
@@ -229,22 +230,23 @@ function renderChart(ctx) {
   const { slide, theme, s, report } = ctx;
   const chartBox = rect(0.06, 0.31, 0.57, 0.5);
   drawChart(slide, chartBox, { chart: s.chart || { labels: (s.points || []).slice(0, 4).map((p, i) => `阶段${i + 1}`), series: [{ name: s.title, values: [38, 56, 74, 91] }], type: 'bar' } }, theme);
-  addPointList(slide, (s.points || []).slice(0, 3), rect(0.66, 0.31, 0.28, 0.5), theme, report);
+  addPointList(slide, (s.points || []).slice(0, 3), rect(0.6167, 0.3033, 0.3166, 0.5), theme, report);
   evidence(ctx);
 }
 
 function renderTimeline(ctx) {
-  chrome(ctx, 'TIMELINE', ctx.s.title);
+  chrome(ctx, TIMELINE.kicker, ctx.s.title);
   const { slide, theme, report } = ctx;
   const { items } = parts(ctx, 'timeline');
   const n = Math.max(1, Math.min(6, items.length));
-  const axisY = 0.47;
-  slide.addShape('line', {
-    ...rect(0.09, axisY, 0.82, 0.001),
-    line: { color: theme.colors.primary, width: 2, endArrowType: 'triangle' },
+  const ax = TIMELINE.axis;
+  // 网页轴是 45% 透明的品牌色细线；PPT 里用与背景混色的实色等价表达，且不带箭头。
+  const axisColor = mixHex(theme.colors.background, theme.colors.primary, ax.opacity);
+  slide.addShape('rect', {
+    ...rect(ax.x, ax.y, ax.w, ax.h),
+    fill: { color: axisColor }, line: { color: axisColor, width: 0 },
   });
-  const cells = grid({ x: 0.07, y: 0.36, w: 0.86, h: 0.44 }, n, 1, gapFor(theme.spacing));
-  items.slice(0, n).forEach((el, i) => drawStep(slide, cells[i], el, theme, report, i));
+  timelineCells(n).forEach((cell, i) => drawStep(slide, cell, items[i], theme, report, i));
   evidence(ctx);
 }
 
@@ -304,9 +306,10 @@ function renderSummary(ctx) {
       fontSize: theme.sizes.body, fontFace: theme.font, color: theme.colors.title, bold: true,
     }, report);
   });
-  slide.addShape('rect', { ...rect(0.06, 0.72, 0.008, 0.09), fill: { color: theme.colors.primary }, line: { color: theme.colors.primary, width: 0 } });
-  addFittedText(slide, s.evidence || s.subtitle || '感谢观看', rect(0.085, 0.72, 0.85, 0.09), {
-    fontSize: theme.sizes.body, fontFace: theme.font, color: theme.colors.body, valign: 'mid',
+  // 网页 .sl-summary__foot：y≈0.570、14px 灰字、左侧 3px 品牌竖线，无底色无标签。
+  slide.addShape('rect', { ...rect(0.0667, 0.57, 0.0032, 0.0415), fill: { color: theme.colors.primary }, line: { color: theme.colors.primary, width: 0 } });
+  addFittedText(slide, s.evidence || s.subtitle || '感谢观看', rect(0.0823, 0.57, 0.851, 0.0415), {
+    fontSize: pxToPt(14), fontFace: theme.font, color: theme.colors.muted, valign: 'mid',
   }, report);
 }
 

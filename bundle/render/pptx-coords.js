@@ -9,19 +9,20 @@ export const SLIDE_H = 7.5;
 export const PAGE_MARGIN = 0.055; // 归一化页边距
 
 /**
- * 常用逻辑区域（归一化）。这些数值由网页 CSS 在 960×540 逻辑画布上的实际尺寸换算而来，
- * 保证 HTML 预览与 PPTX 导出的位置一一对应：
- *   .sl-pad padding 52/64 → kicker y=52, title y=81, rule y=139, points y=164
- *   .sl-evidence bottom:64 → y≈441；.slide__foot bottom:22 + border → 细线 y≈490
+ * 常用逻辑区域（归一化）。这些数值由 CDP 对网页 getBoundingClientRect 的实测换算而来
+ * （960×540 逻辑画布），保证 HTML 预览与 PPTX 导出的位置一一对应：
+ *   .sl-pad → kicker y=52, title y=81, rule y=139
+ *   .sl-evidence → y≈441；.slide__foot 上边线 → y≈490
+ * 改网页 CSS 后必须同步这里，回归测试会逐项比对网页实测与 PPTX 形状坐标。
  */
 export const REGIONS = {
-  kicker: { x: 0.0667, y: 0.0963, w: 0.8666, h: 0.036 },
-  title: { x: 0.0667, y: 0.15, w: 0.8666, h: 0.09 },
+  kicker: { x: 0.0667, y: 0.0963, w: 0.8667, h: 0.0355 },
+  title: { x: 0.0667, y: 0.1503, w: 0.8667, h: 0.077 },
   rule: { x: 0.0667, y: 0.257, w: 0.0542, h: 0.0056 },
-  body: { x: 0.0667, y: 0.3037, w: 0.8666, h: 0.505 },
-  evidence: { x: 0.0667, y: 0.8167, w: 0.8666, h: 0.0648 },
-  footLine: { x: 0.0667, y: 0.9074, w: 0.8666, h: 0.0019 },
-  foot: { x: 0.0667, y: 0.926, w: 0.8666, h: 0.033 },
+  body: { x: 0.0667, y: 0.3037, w: 0.8667, h: 0.505 },
+  evidence: { x: 0.0667, y: 0.8163, w: 0.8667, h: 0.0652 },
+  footLine: { x: 0.0667, y: 0.9082, w: 0.8667, h: 0.0019 },
+  foot: { x: 0.0667, y: 0.926, w: 0.8667, h: 0.033 },
 };
 
 const clamp = (n, lo, hi) => Math.max(lo, Math.min(hi, Number(n) || 0));

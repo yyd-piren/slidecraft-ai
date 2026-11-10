@@ -12,6 +12,7 @@
 import { themeVars, isDarkBackground } from './themes.js';
 import { normalizeDecorations } from '../core/decorations.js';
 import { renderBlocksHTML } from './blocks-html.js';
+import { TIMELINE, timelineCells, pxX, pxY } from '../core/layout-spec.js';
 import { normalizeTheme, toLayout, defaultDesign } from '../core/deck.js';
 import {
   normalizeKind, LAYOUT_MAIN_KIND, hasUsableElements, enrichElements,
@@ -267,17 +268,24 @@ function architectureBody(s) {
 
 function timelineBody(s) {
   const steps = elementsFor('timeline', s).filter((e) => normalizeKind(e.kind) === 'step');
+  const cells = timelineCells(steps.length);
+  const ax = TIMELINE.axis;
+  // 坐标、字号全部来自 core/layout-spec.js，PPTX 侧读同一份规格，
+  // 避免 CSS 与 PPTX 各写一套导致「网页 / 导出不一样」。
   return `<div class="sl-pad">
-    ${kicker('TIMELINE')}${heading(s.title)}
-    <div class="dyn-timeline"><div class="dyn-timeline__axis"></div>${steps
-      .map(
-        (st, i) => `<div class="dyn-timeline__item">
-          <div class="dyn-timeline__dot">${i + 1}</div>
-          <div class="dyn-timeline__title">${esc(elementTitle(st, `阶段 ${i + 1}`))}</div>
-          <div class="dyn-timeline__text">${esc(elementText(st) || (elementItems(st)[0] || ''))}</div>
-        </div>`,
-      )
-      .join('')}</div>
+    ${kicker(TIMELINE.kicker)}${heading(s.title)}
+    <div class="dyn-timeline">
+      <div class="dyn-timeline__axis" style="left:${pxX(ax.x)};top:${pxY(ax.y)};width:${pxX(ax.w)};height:${pxY(ax.h)};opacity:${ax.opacity}"></div>
+      ${steps
+        .map((st, i) => {
+          const c = cells[i];
+          return `<div class="dyn-timeline__item" style="left:${pxX(c.item.x)};top:${pxY(c.item.y)};width:${pxX(c.item.w)};height:${pxY(c.item.h)}">
+          <div class="dyn-timeline__dot" style="left:${pxX(c.dot.x - c.item.x)};top:0;width:${pxX(c.dot.w)};height:${pxY(c.dot.h)};font-size:${TIMELINE.dot.fontPx}px">${i + 1}</div>
+          <div class="dyn-timeline__title" style="top:${pxY(c.title.y - c.item.y)};font-size:${TIMELINE.title.fontPx}px">${esc(elementTitle(st, `阶段 ${i + 1}`))}</div>
+          <div class="dyn-timeline__text" style="top:${pxY(c.text.y - c.item.y)};font-size:${TIMELINE.text.fontPx}px">${esc(elementText(st) || (elementItems(st)[0] || ''))}</div>
+        </div>`;
+        })
+        .join('')}</div>
     ${evidenceLine(s.evidence)}
   </div>`;
 }

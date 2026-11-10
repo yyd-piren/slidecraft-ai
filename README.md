@@ -56,6 +56,7 @@ bundle/
     platform.js                Anna SDK 连接与 storage 抽象
     blocks.js                  自由布局块模型、默认构图、坐标 clamp 与重叠检测
     block-style.js             主题驱动的字号 / 配色规格（HTML px ↔ PPTX pt 共用）
+    layout-spec.js             自动构图的几何规格（网页 / PPTX 唯一坐标来源）
     decorations.js             页面装饰（内置图标 / AI 配图）数据层
     library.js                 主题库与已完成 PPT 归档（anna.storage）
   ai/
@@ -159,8 +160,8 @@ npx esbuild entry.js --bundle --format=esm --platform=browser --target=es2020 --
 ## 测试
 
 ```bash
-# 逻辑与渲染单测（116 项，含 HTML/PPTX 坐标与字号逐项比对、切换前后一致）
-node <测试脚本>            # 阶段 2 的 24 项 + 阶段 2.5 的 14 项 + 阶段 3 的 12 项 + 阶段 4 的 23 项 + 真实输出/模型/动态布局/PPTX 排版 22 项
+# 逻辑与渲染单测（120 项，含 HTML/PPTX 坐标与字号逐项比对、切换前后一致、timeline 同源规格）
+node <测试脚本>            # 阶段 2 的 24 项 + 阶段 2.5 的 14 项 + 阶段 3 的 12 项 + 阶段 4 的 23 项 + 真实输出/模型/动态布局/PPTX 排版 22 项 + 自由布局/样式/次数 21 项 + timeline 同源规格 4 项
 
 # 浏览器端到端（48 项，含自由布局拖拽、切换前后样式一致与调用次数不限；需先启动 anna-app dev --no-llm 与无头 Edge CDP）
 node <E2E 脚本>
@@ -234,6 +235,22 @@ node <E2E 脚本>
 Prompt 明确要求模型为每页输出 3–5 个 `blocks` **位置骨架**（只给 `kind` 与 `x/y/w/h`，不重复正文，避免长输出再次被 `maxTokens` 截断），并写明安全区 `x/y ≥ 0.055`、`x+w ≤ 0.945`、标题通常在 `y≈0.15`、正文 `y≈0.30–0.80`、案例条 `y≈0.82`。
 
 `parser.js` 校验 `kind` 白名单并 clamp 坐标；`resolveBlocks` 用同布局的默认构图把文字补进骨架。模型完全不给 `blocks` 时，本地按 12 种布局生成一套整齐的默认块，绝不空白。Mock Provider 也产出同样的 `blocks` 契约。
+
+## 阶段 4i：自动构图的网页 / PPTX 同源坐标
+
+自由布局解决了「开启拖动后」的坐标一致性，但**自动构图**仍是两个独立实现：HTML 用 CSS 流式定位、`pptx-layouts.js` 用硬编码 `grid(0.06, 0.31…)`。于是某些页面（尤其 timeline）在网页与导出 PPTX 里明显不同：网页时间轴是穿过圆心的 45% 透明细线、无箭头，PPTX 却是圆点下方的实色粗线还带三角箭头；圆点 26px vs 32px、编号 12px vs 16px、标题 14px vs 17px。
+
+新增 `core/layout-spec.js` 作为**自动构图的唯一几何规格**：
+
+| | 网页 | PPTX |
+| --- | --- | --- |
+| 坐标 | 归一化 × 960×540 → CSS px 内联注入 | `rect(x,y,w,h)` → 英寸 |
+| 字号 | CSS px | `pxToPt = px × 0.75` |
+| 半透明 | `opacity: .45` | 与背景 `mixHex()` 成实色（兼容 PowerPoint 透明度） |
+
+`timeline` 的轴线、圆点、标题、说明文字框全部由 `timelineCells(n)` 生成，HTML `layouts.js` 与 PPTX `pptx-layouts.js` / `drawStep()` 读同一份值；`styles.css` 只保留视觉样式、不再写死坐标。共享页眉页脚 `REGIONS` 也按 CDP 实测校准（标题框 41.6px 而非 48.6px 等），`evidence` 去掉 PPTX 里网页没有的 0.5pt 外框。同一轮还校准了 `title` 封面标题位置、`chart` 右侧要点区、`summary` 底部一句话（网页 `y≈0.57`，之前 PPTX 画在 `y≈0.72`）。CDP 实测 + `python-pptx` 解析的 12 布局偏差探测中，大偏差项从 36 降到 29。
+
+**已知边界**：`flowchart`（网页节点有 `01/02/03` 编号、PPTX 没有）、`architecture`（层内小卡片排布）、`dashboard`（指标卡与图表区）、`two-column / comparison`（列内文字起点）仍有结构级差异，需要把这几个布局也改造成 spec 驱动，属于后续独立工作；PowerPoint 与浏览器的字体度量差异（约 1–2px）无法完全消除。回归测试 `[14]` 已固化 timeline 的坐标、字号、无箭头、CSS 不写死坐标四项断言，防止再次漂移。
 
 ## 后续阶段
 

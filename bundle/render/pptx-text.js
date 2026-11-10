@@ -37,14 +37,15 @@ const SCALE_STEPS = [1, 0.9, 0.82, 0.74, 0.68];
  * 返回 {fontSize, lines, adjusted, overflow}。
  */
 export function addFittedText(slide, text, box, style, reporter = null) {
-  const base = Math.max(9, Number(style.fontSize) || 14);
+  const minPt = Math.max(6, Number(style.minFontSize) || 9);
+  const base = Math.max(minPt, Number(style.fontSize) || 14);
   const lineHeightRatio = 1.35;
   let chosen = base;
   let lines = 1;
   let overflow = false;
 
   for (const scale of SCALE_STEPS) {
-    chosen = Math.max(9, Math.round(base * scale * 10) / 10);
+    chosen = Math.max(minPt, Math.round(base * scale * 10) / 10);
     lines = estimateLines(text, box.w, chosen);
     // 单行文本只占约一个字号的高度；多行才需要额外行距，避免把小卡片误判为溢出。
     const ratio = lines > 1 ? lineHeightRatio : 1.0;

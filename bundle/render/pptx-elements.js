@@ -7,6 +7,7 @@
  */
 import { addFittedText } from './pptx-text.js';
 import { rect } from './pptx-coords.js';
+import { TIMELINE, pxToPt } from '../core/layout-spec.js';
 import {
   normalizeKind, elementTitle, elementItems, elementText, elementValue,
 } from './element-utils.js';
@@ -38,6 +39,7 @@ function text(slide, value, box, theme, size, opts, report) {
   addFittedText(slide, String(value), box, {
     fontSize: size, fontFace: theme.font, color: opts.color || theme.colors.title,
     bold: !!opts.bold, align: opts.align || 'left', valign: opts.valign || 'mid',
+    ...(opts.minFontSize ? { minFontSize: opts.minFontSize } : {}),
   }, report);
 }
 
@@ -112,16 +114,29 @@ export function drawLayer(slide, box, el, theme, report) {
 }
 
 /** 时间轴节点：椭圆序号 + 标题 + 说明。 */
-export function drawStep(slide, box, el, theme, report, index = 0) {
-  const dot = { x: box.x + box.w / 2 - 0.22, y: box.y, w: 0.44, h: 0.44 };
-  slide.addShape('ellipse', { ...dot, fill: { color: theme.colors.primary }, line: { color: theme.colors.secondary, width: 0.75 } });
-  slide.addText(String(index + 1), { ...dot, fontSize: 12, fontFace: theme.font, color: 'FFFFFF', bold: true, align: 'center', valign: 'mid', margin: 0 });
-  text(slide, elementTitle(el, `阶段 ${index + 1}`), { x: box.x, y: box.y + 0.55, w: box.w, h: 0.36 }, theme,
-    theme.sizes.card, { bold: true, align: 'center' }, report);
+export function drawStep(slide, cell, el, theme, report, index = 0) {
+  // cell 由 core/layout-spec.js 的 timelineCells() 给出，与 HTML 预览逐项同源。
+  const dot = rect(cell.dot.x, cell.dot.y, cell.dot.w, cell.dot.h);
+  slide.addShape('ellipse', {
+    ...dot,
+    fill: { color: theme.colors.primary },
+    line: { color: theme.colors.primary, width: 0 },
+  });
+  addFittedText(slide, String(index + 1), dot, {
+    fontSize: pxToPt(TIMELINE.dot.fontPx), fontFace: theme.font,
+    color: 'FFFFFF', bold: true, align: 'center', valign: 'mid',
+  }, report);
+  text(slide, elementTitle(el, `阶段 ${index + 1}`),
+    rect(cell.title.x, cell.title.y, cell.title.w, cell.title.h), theme,
+    pxToPt(TIMELINE.title.fontPx), { bold: true, align: 'center', valign: 'top' }, report);
   const stepText = elementText(el) || elementItems(el)[0] || '';
   if (stepText) {
-    text(slide, stepText, { x: box.x, y: box.y + 0.95, w: box.w, h: 0.55 }, theme,
-      Math.max(9, theme.sizes.small + 1), { color: theme.colors.body, align: 'center' }, report);
+    text(slide, stepText,
+      rect(cell.text.x, cell.text.y, cell.text.w, TIMELINE.text.boxH), theme,
+      pxToPt(TIMELINE.text.fontPx), {
+        color: theme.colors.body, align: 'center', valign: 'top',
+        minFontSize: pxToPt(TIMELINE.text.fontPx),
+      }, report);
   }
 }
 
