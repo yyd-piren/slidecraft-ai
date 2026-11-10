@@ -11,7 +11,8 @@
  * → 其他页面保持不变 → 记录前后对比与撤销点。主题修改只替换 deck.theme 字段。
  */
 import * as D from './deck.js';
-import { runMockExport } from '../export/exporter.js';
+import { runRealExport } from '../export/exporter.js';
+import { toAiError } from '../ai/errors.js';
 
 function themeSummary(t) {
   const x = D.normalizeTheme(t);
@@ -68,19 +69,34 @@ export function createActions({ store, ai, platform, logbook }) {
     scheduleSave();
   }
 
+  /** 统一在加载状态里标明当前 Provider，避免把真实 AI 与演示数据混为一谈。 */
+  function aiTag() { return ai.mode === 'anna' ? 'Anna AI' : '演示数据'; }
+
+  /**
+   * 所有 AI 动作的唯一执行入口：
+   * - busy 期间拒绝重复提交（同时保留已有页面数据）；
+   * - 失败统一转成 AiError 的中文可读文案，不展示堆栈、绝不伪装成功、绝不退回 Mock；
+   * - 返回 null 表示失败，调用方不会覆盖原 Deck。
+   */
   async function run(label, fn) {
     if (store.get().busy) {
       toast('warning', '已有任务进行中，请稍候');
       return null;
     }
-    store.set({ busy: label }, 'status');
+    store.set({ busy: `${label} · ${aiTag()}`, aiError: null }, 'status');
     try {
-      return await fn();
+      const out = await fn();
+      store.set({ aiError: null }, 'status');
+      return out;
     } catch (e) {
-      toast('error', e?.message || String(e));
+      const err = toAiError(e);
+      store.set({ aiError: { code: err.code, message: err.userMessage } }, 'status');
+      toast('error', err.userMessage);
       return null;
     } finally {
       store.set({ busy: null }, 'status');
+      // 分批生成会在中途多次刷新；动作结束后再刷一次，保证显示的是最终余额。
+      if (ai.mode === 'anna') Promise.resolve(refreshQuota()).catch(() => {});
     }
   }
 
@@ -206,7 +222,7 @@ export function createActions({ store, ai, platform, logbook }) {
       },
       'render',
     );
-    toast('info', '已填入示例需求（演示数据）');
+    toast('info', '已填入示例需求');
   }
 
   async function createAndGenerateOutline() {
@@ -222,22 +238,22 @@ export function createActions({ store, ai, platform, logbook }) {
     deck.theme = D.normalizeTheme(theme);
     store.set({ deck, createError: '', hasDraft: true }, 'render');
 
-    const res = await run('正在生成大纲（演示数据）', () => ai.generateOutline({ meta: deck.meta }));
+    const res = await run('正在生成大纲', () => ai.generateOutline({ meta: deck.meta }));
     if (!res) return;
     const next = { ...deck, outline: res.outline, updatedAt: Date.now() };
     store.set({ deck: next, view: 'outline', selectedSlideId: null }, 'render');
     await persist();
-    toast('success', `已生成 ${res.outline.length} 页大纲（演示数据）`);
+    toast('success', `已生成 ${res.outline.length} 页大纲`);
   }
 
   async function regenerateOutline() {
     const deck = store.get().deck;
     if (!deck) return;
-    const res = await run('正在重新生成大纲（演示数据）', () => ai.generateOutline({ meta: deck.meta }));
+    const res = await run('正在重新生成大纲', () => ai.generateOutline({ meta: deck.meta }));
     if (!res) return;
     store.set({ deck: { ...deck, outline: res.outline, updatedAt: Date.now() } }, 'render');
     await persist();
-    toast('success', '大纲已更新（演示数据）');
+    toast('success', '大纲已更新');
   }
 
   // ---------------- 大纲编辑 ----------------
@@ -254,21 +270,21 @@ export function createActions({ store, ai, platform, logbook }) {
       toast('error', '请先生成大纲');
       return;
     }
-    const res = await run('正在生成全部页面内容（演示数据）', () =>
+    const res = await run('正在生成全部页面内容', () =>
       ai.generateSlides({ meta: deck.meta, outline: deck.outline, existingSlides: deck.slides }),
     );
     if (!res) return;
     const next = D.mergeGeneratedSlides(deck, res.slides);
     store.set({ deck: next, view: 'workspace', selectedSlideId: next.slides[0]?.id || null, propTab: 'content' }, 'render');
     await persist();
-    toast('success', `已生成 ${next.slides.length} 页内容（演示数据）`);
+    toast('success', `已生成 ${next.slides.length} 页内容`);
   }
 
   async function regenerateSlide(slideId) {
     const deck = store.get().deck;
     const slide = deck?.slides.find((s) => s.id === slideId);
     if (!deck || !slide) { toast('error', '找不到该页面'); return; }
-    const res = await run('正在重新生成当前页（演示数据）', () =>
+    const res = await run('正在重新生成当前页', () =>
       ai.regenerateSlide({
         meta: deck.meta, slide: D.copy(slide),
         outlineItem: deck.outline.find((o) => o.id === slide.outlineId) || null,
@@ -307,7 +323,7 @@ export function createActions({ store, ai, platform, logbook }) {
     const idx = deck.slides.findIndex((s) => s.id === slideId);
     const slide = deck.slides[idx];
 
-    const res = await run('正在按描述修改当前页（演示数据）', () =>
+    const res = await run('正在按描述修改当前页', () =>
       ai.editSlideByInstruction({
         instruction,
         slide: D.copy(slide),
@@ -353,7 +369,7 @@ export function createActions({ store, ai, platform, logbook }) {
     if (!deck) return;
     if (!String(instruction || '').trim()) { toast('warning', '请描述要新增的页面内容'); return; }
     const idx = Math.max(0, deck.slides.findIndex((s) => s.id === state.selectedSlideId));
-    const res = await run('正在按描述生成新页面（演示数据）', () =>
+    const res = await run('正在按描述生成新页面', () =>
       ai.createSlideByInstruction({
         instruction,
         meta: D.copy(deck.meta),
@@ -392,7 +408,7 @@ export function createActions({ store, ai, platform, logbook }) {
     const slideId = state.selectedSlideId;
     if (!deck || !slideId) return;
     const slide = deck.slides.find((s) => s.id === slideId);
-    const res = await run('正在重新组织页面布局（演示数据）', () =>
+    const res = await run('正在重新组织页面布局', () =>
       ai.changeSlideLayout({ slide: D.copy(slide), layout }),
     );
     if (!res) return;
@@ -453,7 +469,7 @@ export function createActions({ store, ai, platform, logbook }) {
     const state = store.get();
     const instruction = String(state.themePrompt || '').trim();
     if (!instruction) { toast('warning', '请先描述想要的视觉风格'); return; }
-    const res = await run('正在生成主题设计（演示数据）', () =>
+    const res = await run('正在生成主题设计', () =>
       ai.generateThemeByInstruction({ instruction, currentTheme: D.normalizeTheme(state.deck.theme) }),
     );
     if (!res) return;
@@ -530,20 +546,61 @@ export function createActions({ store, ai, platform, logbook }) {
     const deck = store.get().deck;
     if (!deck || !deck.slides.length) { toast('error', '请先生成页面内容再导出'); return; }
     if (store.get().busy) return;
-    store.set({ modal: { type: 'export', stage: '准备中', percent: 0, steps: [], result: null } }, 'status');
-    const result = await runMockExport({
-      deck,
-      onProgress: (p) => store.set({ modal: { type: 'export', ...p } }, 'status'),
-    });
-    store.set({ modal: { type: 'export', stage: '完成', percent: 100, steps: [], result } }, 'status');
-    const next = { ...deck, exportInfo: { ...result, at: Date.now() }, updatedAt: Date.now() };
-    store.set({ deck: next }, 'visual');
-    await persist();
-    await logbook?.write({
-      mode: 'mock', action: 'export_pptx', model: null, quotaConsumed: 0,
-      status: 'mock', outputChars: 0,
-      note: '阶段 2.5 演示导出，未生成文件、未调用 upload.inline',
-    });
+    store.set({ modal: { type: 'export', stage: '准备导出', percent: 0, steps: [], result: null, error: null } }, 'status');
+    try {
+      const result = await runRealExport({
+        deck,
+        onProgress: (p) => store.set({ modal: { type: 'export', ...p } }, 'status'),
+      });
+      store.set({ modal: { type: 'export', stage: '完成', percent: 100, steps: [], result, error: null } }, 'status');
+      // 只把元信息写回 Deck；绝不把整个文件字节塞进 anna.storage（256 KiB 限制）。
+      const next = {
+        ...deck,
+        exportInfo: {
+          ready: true, fileName: result.fileName, size: result.size,
+          pages: result.pages, warningCount: result.warnings.length, at: Date.now(),
+        },
+        updatedAt: Date.now(),
+      };
+      store.set({ deck: next }, 'visual');
+      await persist();
+      await logbook?.write({
+        mode: ai.mode, action: 'export_pptx', model: null, quotaConsumed: 0,
+        status: 'local-real', outputChars: result.size,
+        note: '浏览器本地真实生成 PPTX 并下载，未调用 Anna AI / upload.inline',
+      });
+      toast('success', `已生成 ${result.pages} 页真实 PPTX 并触发下载${result.warnings.length ? `（${result.warnings.length} 条排版提醒）` : ''}`);
+    } catch (e) {
+      const msg = String(e?.message || e);
+      store.set({ modal: { type: 'export', stage: '失败', percent: 100, steps: [], result: null, error: msg } }, 'status');
+      toast('error', `导出失败：${msg}`);
+    }
+  }
+
+  // ---------------- 模型选择 / 剩余额度（阶段 4 增强） ----------------
+
+  const MODEL_STORAGE_KEY = 'slidecraft:ai-model';
+
+  /** 顶栏下拉切换模型：写入 Provider + 本地持久化，下一次生成即生效。 */
+  function setModel(name) {
+    const value = String(name || '').trim();
+    ai.setModel?.(value);
+    try { window.localStorage.setItem(MODEL_STORAGE_KEY, value); }
+    catch { /* 隐私模式下忽略 */ }
+    store.set({ aiModel: value }, 'status');
+    toast('info', value ? `已切换模型：${value}` : '已恢复平台默认模型路由');
+  }
+
+  /** 只读刷新模型目录与剩余 CU；失败时给出可读说明，绝不阻断主流程。 */
+  async function refreshQuota() {
+    const r = await ai.getCatalog();
+    store.set({
+      aiModels: Array.isArray(r.models) ? r.models : [],
+      aiQuota: Number.isFinite(r.remainingCU) ? r.remainingCU : null,
+      aiQuotaAt: r.at || Date.now(),
+      aiCatalogError: r.error || '',
+    }, 'status');
+    return r;
   }
 
   function closeModal() { store.set({ modal: null }, 'status'); }
@@ -573,5 +630,6 @@ export function createActions({ store, ai, platform, logbook }) {
     undo, setUndoStack,
     editField, selectSlide, slideAdd, slideDel, slideMove, pointAdd, pointDel,
     exportPptx, closeModal, askResetDraft, resetDraft, persist, toast,
+    setModel, refreshQuota,
   };
 }

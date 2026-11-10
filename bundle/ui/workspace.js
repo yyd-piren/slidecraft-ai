@@ -105,7 +105,7 @@ function aiTabHTML(state, slide, idx) {
     <div class="prop-section">
       <div class="prop-title">描述你想要的修改</div>
       <textarea class="textarea" data-live-bind="aiDraft" placeholder="例如：把这一页改成三层技术架构图，突出前端、业务服务和数据存储之间的调用关系。">${esc(state.aiDraft || '')}</textarea>
-      <span class="field__hint">会连同前后页上下文、大纲条目与当前主题一起传给 AI Adapter（本阶段为本地 Mock）</span>
+      <span class="field__hint">会连同前后页上下文、大纲条目与当前主题一起传给 AI Adapter（${state.aiMode === 'anna' ? 'Anna AI' : '本阶段为本地 Mock'}）</span>
     </div>
     <div class="prop-section">
       <div class="prop-title">常用修改建议</div>

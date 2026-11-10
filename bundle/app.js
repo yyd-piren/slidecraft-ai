@@ -1,15 +1,22 @@
 /**
- * SlideCraft AI — bundle 入口。
+ * SlideCraft AI — bundle 入口（阶段 4）。
  *
- * 启动顺序：连接 Runtime（最多等 2.5s，失败则独立预览）→ 读草稿 → 渲染 UI。
- * 关键约束：页面初始化只读取 storage，绝不发起任何 AI 调用。
- * 阶段 2.5 的 AI 适配器仍固定为 mock，且 anna-app dev 以 --no-llm 启动，
- * 因此刷新、热更新、普通编辑、AI 修改都不会产生 CU 消耗。
+ * 启动顺序：连接 Runtime → 读草稿 → 渲染 UI。
+ * 关键约束：页面初始化只读 storage，绝不发起任何 AI 调用；刷新、热更新、普通编辑
+ * 都不可能产生 CU 消耗。只有用户明确点击生成按钮才会走 Provider。
+ *
+ * AI 模式：
+ * - 生产（非 localhost）默认真实 AnnaAIProvider；
+ * - 本地 dev / 独立预览默认 Mock，配合 anna-app dev --no-llm 做到零 CU；
+ * - 显式 ?ai=anna / ?aiReal=1 才在本地启用真实 Provider，且本地环境硬性 maxCalls=1
+ *   （阶段 4 验收闸门，生产不限制）。
  */
 import { connectPlatform } from './core/platform.js';
 import { createStore } from './core/store.js';
 import { createLogbook } from './ai/logbook.js';
-import { createAiAdapter } from './ai/adapter.js';
+import { createAiAdapter, resolveAiMode } from './ai/adapter.js';
+import { createAnnaProvider } from './ai/anna-provider.js';
+import { readableAiError } from './ai/errors.js';
 import { createActions } from './core/actions.js';
 import {
   DECK_STORAGE_KEY, UNDO_STORAGE_KEY, validateDeck, normalizeDeck, normalizeTheme, defaultMeta,
@@ -29,10 +36,65 @@ async function boot() {
   const appEl = document.getElementById('app');
   const overlayEl = document.getElementById('overlay-root');
 
+  const isLocal = ['localhost', '127.0.0.1'].includes(location.hostname);
+  // harness dashboard 会自行生成 iframe URL；iframe 与 dashboard 同源，
+  // 因此父页面查询参数同样可用于切换模式与设置本次验证的调用上限。
+  let parentSearch = '';
+  try { parentSearch = window.parent !== window ? window.parent.location.search : ''; }
+  catch { /* 跨源时忽略 */ }
+  const allParams = new URLSearchParams(
+    [location.search, parentSearch].filter(Boolean).map((s) => String(s).replace(/^\?/, '')).join('&'),
+  );
+
   const platform = await connectPlatform();
-  const logbook = createLogbook(platform.storage);
-  const ai = createAiAdapter({ mode: 'mock', logbook });
   const store = createStore();
+  const logbook = createLogbook(platform.storage);
+
+  const requestedMode = resolveAiMode({
+    hostname: location.hostname, search: location.search, parentSearch,
+  });
+  // 本地默认严格 1 次（防止误烧额度）；只有显式 aiMaxCalls=N 才放开，上限 50 次。
+  // 生产环境不限制正常业务使用。
+  const cap = Number(allParams.get('aiMaxCalls'));
+  const maxCalls = Number.isFinite(cap) && cap >= 1
+    ? Math.min(50, Math.floor(cap))
+    : (isLocal ? 1 : Infinity);
+  let savedModel = '';
+  try { savedModel = window.localStorage.getItem('slidecraft:ai-model') || ''; }
+  catch { /* 隐私模式下忽略 */ }
+  let aiMode = requestedMode;
+  let aiModeNote = '';
+  let ai;
+  try {
+    ai = createAiAdapter({
+      mode: requestedMode,
+      logbook,
+      anna: platform.anna,
+      maxCalls,
+      modelName: savedModel,
+      onCall: (record) => {
+        // 只记录脱敏元数据：task / model / usage / quotaConsumed，绝无凭据。
+        const prov = ai?.provider;
+        store.set({
+          lastAiCall: {
+            task: record.task, model: record.model, provider: record.provider,
+            usage: record.usage, quotaConsumed: record.quotaConsumed,
+            ok: record.ok, errorCode: record.errorCode, at: record.at,
+            used: prov?.callCount ?? null,
+            limit: Number.isFinite(prov?.maxCalls) ? prov.maxCalls : null,
+          },
+        }, 'status');
+        // 每次真实调用后异步刷新余额（catalog 是能力发现，不产生推理、不扣 CU）。
+        Promise.resolve(actions.refreshQuota()).catch(() => {});
+      },
+    });
+  } catch (e) {
+    // 初始化期没有宿主时明确告知并切到演示模式；这不是「调用失败后静默假装成功」。
+    aiMode = 'mock';
+    aiModeNote = `真实 AI 不可用，已切换演示模式：${readableAiError(e)}`;
+    ai = createAiAdapter({ mode: 'mock', logbook });
+  }
+
   const actions = createActions({ store, ai, platform, logbook });
 
   let lastView = null;
@@ -83,10 +145,18 @@ async function boot() {
       form: deck ? { ...defaultMeta(), ...deck.meta, theme: normalizeTheme(deck.theme).id } : store.get().form,
       saveState: deck ? 'saved' : 'idle',
       undoStack: deck ? undo : [],
+      aiMode,
+      aiModeNote,
+      aiModel: aiMode === 'anna' ? savedModel : '',
+      lastAiCall: null,
+      aiError: null,
     },
     'render',
   );
   status(store.get());
+
+  // 真实模式启动时拉一次模型目录 + 余额；失败只影响该区域显示，不阻断应用。
+  if (aiMode === 'anna') Promise.resolve(actions.refreshQuota()).catch(() => {});
 
   function handleAction(e) {
     const btn = e.target.closest('[data-action]');
@@ -133,6 +203,7 @@ async function boot() {
       case 'theme:example': return actions.applyThemeExample(btn.dataset.text);
       case 'theme:generate': return actions.applyThemeByInstruction();
       case 'theme:apply-draft': return actions.applyThemeDraft();
+      case 'ai:refresh': return actions.refreshQuota();
       case 'undo:last': return actions.undo();
       case 'modal:close': return actions.closeModal();
       default: console.warn('[SlideCraft] 未处理的动作：', a);
@@ -162,6 +233,7 @@ async function boot() {
   function onChange(e) {
     const el = e.target;
     if (!(el instanceof HTMLSelectElement)) return;
+    if (el.dataset.action === 'ai:model') { actions.setModel(el.value); return; }
     if (el.dataset.draftBind) { handleDraft(el.dataset.draftBind, el.value); return; }
     const bind = el.dataset.bind;
     if (!bind) return;
@@ -183,8 +255,13 @@ async function boot() {
   });
 
   // 本地调试钩子：仅在本机开发/本地 harness 暴露，Staging 域名下不存在。
-  if (['localhost', '127.0.0.1'].includes(location.hostname)) {
-    window.__SLIDECRAFT__ = { store, actions, ai, platform, logbook };
+  if (isLocal) {
+    window.__SLIDECRAFT__ = {
+      store, actions, ai, platform, logbook,
+      aiMode, aiModeNote, requestedMode, maxCalls,
+      // 供 E2E 用「注入的假 SDK」验证 Anna Provider，不产生任何真实 RPC。
+      createAnnaProvider,
+    };
   }
 }
 

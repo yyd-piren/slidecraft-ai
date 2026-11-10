@@ -157,6 +157,39 @@ function normalizeDesign(raw) {
   };
 }
 
+function firstText(...vals) {
+  for (const v of vals) {
+    if (typeof v === 'string' && v.trim()) return v.trim();
+    if (typeof v === 'number' && Number.isFinite(v)) return String(v);
+  }
+  return '';
+}
+
+function itemText(x) {
+  if (typeof x === 'string') return x.trim();
+  if (typeof x === 'number') return String(x);
+  if (x && typeof x === 'object') return firstText(x.text, x.title, x.name, x.label, x.detail, x.value);
+  return '';
+}
+
+/** 真实模型会把条目写成 items / bullets / points / 一段换行文本，这里统一收敛。 */
+function elementItemsOf(e) {
+  const raw = e.items ?? e.bullets ?? e.points ?? e.list ?? e.entries ?? e.content ?? e.text;
+  const arr = Array.isArray(raw) ? raw : (raw === undefined || raw === null || raw === '' ? [] : [raw]);
+  const out = [];
+  for (const x of arr) {
+    if (typeof x === 'string') {
+      const parts = x.split(/[\n；;]+/).map((s) => s.trim()).filter(Boolean);
+      if (parts.length > 1) out.push(...parts);
+      else if (x.trim()) out.push(x.trim());
+    } else {
+      const s = itemText(x);
+      if (s) out.push(s);
+    }
+  }
+  return out.filter(Boolean).slice(0, 8);
+}
+
 /** 结构化页面元素：节点 / 连线 / 阶段 / 指标 / 分栏 / 文本块。 */
 export function normalizeElements(raw) {
   if (!Array.isArray(raw)) return [];
@@ -165,13 +198,14 @@ export function normalizeElements(raw) {
     .map((e) => ({
       id: e.id || uid('el'),
       kind: String(e.kind || 'node'),
-      title: String(e.title ?? ''),
+      // 兼容模型把标题写成 name / label / heading，把内容写成 bullets / text。
+      title: firstText(e.title, e.name, e.label, e.heading, e.header),
       text: String(e.text ?? ''),
-      value: e.value === undefined ? '' : e.value,
+      value: firstText(e.value, e.number, e.metric, e.stat),
       from: e.from ? String(e.from) : '',
       to: e.to ? String(e.to) : '',
       level: Number(e.level) || 0,
-      items: Array.isArray(e.items) ? e.items.map((x) => String(x)) : [],
+      items: elementItemsOf(e),
       x: typeof e.x === 'number' ? e.x : null,
       y: typeof e.y === 'number' ? e.y : null,
       w: typeof e.w === 'number' ? e.w : null,

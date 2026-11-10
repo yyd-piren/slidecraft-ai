@@ -33,7 +33,9 @@ function homeHTML(state) {
           ${d ? `继续上次草稿 · ${pages} 页` : '暂无已保存草稿'}
         </button>
       </div>
-      <div class="hero__note">当前为演示数据模式：大纲与页面内容由本地 Mock 生成，不会调用 Anna AI，也不会消耗 CU。</div>
+      <div class="hero__note">${state.aiMode === 'anna'
+        ? '已接入 Anna 平台 AI：只有点击生成才会调用模型，按实际用量计入 CU；导出 PPTX 全部在本地完成。'
+        : '当前为演示数据模式：大纲与页面内容由本地 Mock 生成，不会调用 Anna AI，也不会消耗 CU。'}</div>
     </section>
     <section class="flow">
       <div class="flow__step"><span class="flow__num">1</span><div><div class="flow__title">描述需求</div><div class="flow__text">主题、受众、用途、页数、语言与风格</div></div></div>
@@ -41,7 +43,7 @@ function homeHTML(state) {
       <div class="flow__step"><span class="flow__num">3</span><div><div class="flow__title">打磨并导出</div><div class="flow__text">三栏工作区预览，导出可编辑 PPTX</div></div></div>
     </section>
     <div class="home__foot">
-      <span class="tiny">SlideCraft AI · 阶段 2.5 · 自然语言改页 · 动态主题 · 12 种布局</span>
+      <span class="tiny">SlideCraft AI · 阶段 4 · Anna AI 接入 · 自然语言改页 · 动态主题 · 12 种布局</span>
       ${d ? '<button class="btn btn--ghost btn--sm" data-action="draft:reset">清除已保存草稿</button>' : ''}
     </div>
   </div></div>`;
@@ -125,7 +127,7 @@ function createHTML(state) {
       <div class="field__error" data-create-error></div>
       <div class="row" style="margin-left:auto">
         <button class="btn btn--secondary" data-action="nav:home">取消</button>
-        <button class="btn btn--primary" data-action="form:submit">生成大纲（演示数据）</button>
+        <button class="btn btn--primary" data-action="form:submit">生成大纲（${state.aiMode === 'anna' ? 'Anna AI' : '演示数据'}）</button>
       </div>
     </div>
   </div></div>`;
@@ -181,7 +183,9 @@ function outlineHTML(state) {
     <div class="divider"></div>
     <div class="row row--between">
       <button class="btn btn--ghost" data-action="nav:create">← 返回修改需求</button>
-      <span class="tiny">演示模式：本页所有 AI 操作均返回本地 Mock 数据，不产生 CU 消耗。</span>
+      <span class="tiny">${state.aiMode === 'anna'
+        ? 'Anna AI 已接入：生成与修改会真实调用模型并计入 CU，失败时不会覆盖现有内容。'
+        : '演示模式：本页所有 AI 操作均返回本地 Mock 数据，不产生 CU 消耗。'}</span>
     </div>
   </div></div>`;
 }

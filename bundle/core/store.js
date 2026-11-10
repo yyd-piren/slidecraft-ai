@@ -11,6 +11,9 @@ import { defaultMeta, normalizeTheme } from './deck.js';
 const STATUS_KEYS = [
   'busy', 'toast', 'modal', 'saveState', 'host', 'hostReason', 'createError',
   'hasDraft', 'undoStack', 'lastEdit',
+  // 阶段 4：AI 模式与真实调用反馈（只影响顶栏/浮层，不重建输入区）
+  'aiMode', 'aiModeNote', 'lastAiCall', 'aiError',
+  'aiModels', 'aiModel', 'aiQuota', 'aiQuotaAt', 'aiCatalogError',
 ];
 
 export function createStore() {
@@ -35,6 +38,16 @@ export function createStore() {
     themePrompt: '',             // 主题自然语言描述
     lastEdit: null,              // 修改前后对比快照
     undoStack: [],               // 最近 5 条可撤销记录
+    // 阶段 4
+    aiMode: 'mock',              // mock | anna
+    aiModeNote: '',              // 真实 Provider 不可用时的明确说明（绝不静默降级）
+    lastAiCall: null,            // 最近一次真实 llm.complete 的 model / usage / quotaConsumed
+    aiError: null,               // 细粒度错误态 {code, message}
+    aiModels: [],                // llm.catalog 返回的 text 模型列表
+    aiModel: '',                 // 用户选择的模型（'' = 平台默认路由）
+    aiQuota: null,               // 剩余 CU（number | null）
+    aiQuotaAt: null,             // 上次刷新时间
+    aiCatalogError: '',          // 目录/额度不可用时的可读说明
   };
 
   const listeners = { render: new Set(), visual: new Set(), status: new Set() };

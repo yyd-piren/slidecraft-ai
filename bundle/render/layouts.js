@@ -11,6 +11,10 @@
  */
 import { themeVars, isDarkBackground } from './themes.js';
 import { normalizeTheme, toLayout, defaultDesign } from '../core/deck.js';
+import {
+  normalizeKind, LAYOUT_MAIN_KIND, hasUsableElements, enrichElements,
+  elementTitle, elementItems, elementText, elementValue, pointsToItems,
+} from './element-utils.js';
 
 export function esc(value) {
   return String(value ?? '')
@@ -175,21 +179,15 @@ function summaryBody(s) {
 /** 没有元素时按原有要点兜底生成，保证任何布局都有可见内容，且绝不丢失文字。 */
 function elementsFor(layout, slide) {
   const given = Array.isArray(slide.elements) ? slide.elements : [];
-  const of = (kind) => given.filter((e) => e.kind === kind);
   const pts = slide.points || [];
-  const texts = pts.map((p) => p.text).filter(Boolean);
-  const t = slide.title || '本主题';
+  const texts = pointsToItems(slide);
+  const mainKind = LAYOUT_MAIN_KIND[layout];
 
-  if (given.length) {
-    const useful = {
-      flowchart: of('node').length ? given : null,
-      architecture: of('layer').length ? given : null,
-      timeline: of('step').length ? given : null,
-      comparison: of('column').length ? given : null,
-      'two-column': of('column').length ? given : null,
-      dashboard: of('metric').length ? given : null,
-    }[layout];
-    if (useful) return useful;
+  // 只有「目标类型元素确实带内容」才采用 AI 给的结构。
+  // 真实模型常给出只有 kind 的空壳 column / layer / step，旧逻辑会照单全收，
+  // 于是画出空白框；这里改为一律回退到 slide.points，并对字段做统一规范化。
+  if (mainKind && hasUsableElements(given, mainKind)) {
+    return enrichElements(given, slide);
   }
 
   if (layout === 'flowchart' || layout === 'architecture') {
@@ -229,16 +227,16 @@ function elementsFor(layout, slide) {
 
 function flowBody(s) {
   const els = elementsFor('flowchart', s);
-  const nodes = els.filter((e) => e.kind === 'node');
-  const links = els.filter((e) => e.kind === 'connector');
+  const nodes = els.filter((e) => normalizeKind(e.kind) === 'node');
+  const links = els.filter((e) => normalizeKind(e.kind) === 'connector');
   return `<div class="sl-pad">
     ${kicker('FLOW')}${heading(s.title)}
     <div class="dyn-flow">${nodes
       .map(
         (n, i) => `<div class="dyn-node" data-el-id="${esc(n.id)}">
           <div class="dyn-node__idx">${String(i + 1).padStart(2, '0')}</div>
-          <div class="dyn-node__title">${esc(n.title)}</div>
-          <div class="dyn-node__text">${esc(n.text)}</div>
+          <div class="dyn-node__title">${esc(elementTitle(n, `环节 ${i + 1}`))}</div>
+          <div class="dyn-node__text">${esc(elementText(n) || (elementItems(n)[0] || ''))}</div>
         </div>${i < nodes.length - 1 ? '<div class="dyn-arrow" aria-hidden="true"><span>→</span></div>' : ''}`,
       )
       .join('')}</div>
@@ -249,15 +247,15 @@ function flowBody(s) {
 
 function architectureBody(s) {
   const els = elementsFor('architecture', s);
-  const layers = els.filter((e) => e.kind === 'layer');
-  const links = els.filter((e) => e.kind === 'connector');
+  const layers = els.filter((e) => normalizeKind(e.kind) === 'layer');
+  const links = els.filter((e) => normalizeKind(e.kind) === 'connector');
   return `<div class="sl-pad">
     ${kicker('ARCHITECTURE')}${heading(s.title)}
     <div class="dyn-arch">${layers
       .map(
         (l, i) => `<div class="dyn-arch__layer">
-          <div class="dyn-arch__label">${esc(l.title)}</div>
-          <div class="dyn-arch__boxes">${(l.items || []).map((it) => `<div class="dyn-arch__box">${esc(it)}</div>`).join('')}</div>
+          <div class="dyn-arch__label">${esc(elementTitle(l, `架构层 ${i + 1}`))}</div>
+          <div class="dyn-arch__boxes">${elementItems(l).map((it) => `<div class="dyn-arch__box">${esc(it)}</div>`).join('')}</div>
         </div>${i < layers.length - 1 ? `<div class="dyn-arch__link" title="连接线 ${esc(links[i]?.from || '')} → ${esc(links[i]?.to || '')}">↓ 调用</div>` : ''}`,
       )
       .join('')}</div>
@@ -266,15 +264,15 @@ function architectureBody(s) {
 }
 
 function timelineBody(s) {
-  const steps = elementsFor('timeline', s).filter((e) => e.kind === 'step');
+  const steps = elementsFor('timeline', s).filter((e) => normalizeKind(e.kind) === 'step');
   return `<div class="sl-pad">
     ${kicker('TIMELINE')}${heading(s.title)}
     <div class="dyn-timeline"><div class="dyn-timeline__axis"></div>${steps
       .map(
         (st, i) => `<div class="dyn-timeline__item">
           <div class="dyn-timeline__dot">${i + 1}</div>
-          <div class="dyn-timeline__title">${esc(st.title)}</div>
-          <div class="dyn-timeline__text">${esc(st.text)}</div>
+          <div class="dyn-timeline__title">${esc(elementTitle(st, `阶段 ${i + 1}`))}</div>
+          <div class="dyn-timeline__text">${esc(elementText(st) || (elementItems(st)[0] || ''))}</div>
         </div>`,
       )
       .join('')}</div>
@@ -283,14 +281,18 @@ function timelineBody(s) {
 }
 
 function columnsBody(s, comparison) {
-  const cols = elementsFor(comparison ? 'comparison' : 'two-column', s).filter((e) => e.kind === 'column');
+  const cols = elementsFor(comparison ? 'comparison' : 'two-column', s)
+    .filter((e) => normalizeKind(e.kind) === 'column');
+  // 双保险：AI 给了空壳 column 时不得画出两个空白框，退回普通内容页展示原要点。
+  const hasText = cols.some((c) => elementTitle(c) || elementItems(c).length);
+  if (!hasText) return contentBody(s);
   return `<div class="sl-pad">
     ${kicker(comparison ? 'COMPARISON' : 'TWO COLUMNS')}${heading(s.title)}
     <div class="dyn-cols${comparison ? ' dyn-cols--vs' : ''}">${cols
       .map(
         (c) => `<div class="dyn-col">
-          <div class="dyn-col__head">${esc(c.title)}</div>
-          <ul class="dyn-col__list">${(c.items || []).map((it) => `<li>${esc(it)}</li>`).join('')}</ul>
+          <div class="dyn-col__head">${esc(elementTitle(c, comparison ? '方案' : '核心要点'))}</div>
+          <ul class="dyn-col__list">${elementItems(c).map((it) => `<li>${esc(it)}</li>`).join('')}</ul>
         </div>`,
       )
       .join('')}</div>
@@ -299,8 +301,9 @@ function columnsBody(s, comparison) {
 }
 
 function dashboardBody(s) {
-  const metrics = elementsFor('dashboard', s).filter((e) => e.kind === 'metric');
-  const bars = elementsFor('dashboard', s).filter((e) => e.kind === 'bar');
+  const all = elementsFor('dashboard', s);
+  const metrics = all.filter((e) => normalizeKind(e.kind) === 'metric');
+  const bars = all.filter((e) => normalizeKind(e.kind) === 'bar');
   const chart = s.chart || {
     labels: ['Q1', 'Q2', 'Q3', 'Q4'],
     series: [{ name: s.title, values: [42, 58, 71, 88] }],
@@ -310,8 +313,8 @@ function dashboardBody(s) {
     ${kicker('DASHBOARD')}${heading(s.title)}
     <div class="dyn-metrics">${metrics
       .map(
-        (m) => `<div class="dyn-metric"><div class="dyn-metric__value">${esc(m.value)}</div>
-          <div class="dyn-metric__label">${esc(m.title)}</div></div>`,
+        (m) => `<div class="dyn-metric"><div class="dyn-metric__value">${esc(elementValue(m))}</div>
+          <div class="dyn-metric__label">${esc(elementTitle(m, '指标'))}</div></div>`,
       )
       .join('')}</div>
     <div class="dyn-dash-chart">${nativeChart(chart)}${bars.length ? `<div class="dyn-caption">${bars.length} 项补充指标</div>` : ''}</div>

@@ -15,6 +15,43 @@ const STEPS = [
 const SAVE_LABEL = { idle: '本地草稿', saving: '正在保存…', saved: '已保存', error: '保存失败' };
 const HOST_LABEL = { connecting: '连接中…', host: 'Anna 宿主', standalone: '独立预览' };
 
+/** 阶段 4：错误分类标签，让用户一眼区分额度不足 / 超时 / 格式异常 / 服务异常。 */
+export const AI_ERROR_LABEL = {
+  AI_DISABLED: 'AI 已禁用', NOT_GRANTED: '未授权', QUOTA_EXCEEDED: '额度不足',
+  INVALID_REQUEST: '请求无效', PROVIDER_ERROR: '服务异常', SESSION_EXPIRED: '会话过期',
+  TIMEOUT: '请求超时', CALL_LIMIT: '调用上限', INVALID_OUTPUT: '返回格式异常',
+  NO_HOST: '未连接宿主', UNKNOWN: '生成失败',
+};
+
+function aiModalBadge(state) {
+  return state.aiMode === 'anna'
+    ? '<span class="badge badge--ai">Anna AI</span>'
+    : '<span class="badge badge--mock">演示模式</span>';
+}
+
+function aiBadgeText(state) {
+  if (state.aiMode !== 'anna') return '演示模式 · 未接入 AI';
+  const c = state.lastAiCall;
+  if (c && Number.isFinite(c.limit) && c.used !== null && c.used !== undefined) {
+    return `Anna AI · 剩 ${Math.max(0, c.limit - c.used)} 次`;
+  }
+  return 'Anna AI 已接入';
+}
+
+function aiBadgeTitle(state) {
+  if (state.aiMode !== 'anna') return '当前使用本地演示数据，不会调用 Anna AI，也不会消耗 CU';
+  const c = state.lastAiCall;
+  const calls = c && Number.isFinite(c.limit)
+    ? `本次会话 ${c.used ?? 0}/${c.limit} 次调用 · 剩 ${Math.max(0, c.limit - (c.used ?? 0))} 次`
+    : '点击生成后才会调用 Anna AI';
+  if (!c) return calls;
+  return [
+    calls, `任务 ${c.task || '—'}`, `模型 ${c.model || '—'}`,
+    `输入/输出 ${c.usage?.inputTokens ?? '—'}/${c.usage?.outputTokens ?? '—'} tokens`,
+    `实际消耗 ${c.quotaConsumed ?? '未返回'} CU`,
+  ].join(' · ');
+}
+
 export function selectHTML(items, value, bind, cls = 'select') {
   return `<select class="${cls}" data-bind="${esc(bind)}">${items
     .map((it) => {
@@ -23,6 +60,27 @@ export function selectHTML(items, value, bind, cls = 'select') {
       return `<option value="${esc(v)}"${v === value ? ' selected' : ''}>${esc(label)}</option>`;
     })
     .join('')}</select>`;
+}
+
+/** 顶栏模型下拉的选项（真实 AI 模式才有）。 */
+function aiModelOptionsHTML(state) {
+  return `<option value="">平台默认模型</option>` + (Array.isArray(state.aiModels) ? state.aiModels : [])
+    .map((m) => `<option value="${esc(m.name)}"${state.aiModel === m.name ? ' selected' : ''}>${esc(m.display || m.name)}</option>`)
+    .join('');
+}
+
+function aiControlsHTML(state) {
+  if (state.aiMode !== 'anna') return '';
+  const models = Array.isArray(state.aiModels) ? state.aiModels : [];
+  const sig = models.map((m) => m.name).join('|');
+  const quota = Number.isFinite(state.aiQuota) ? state.aiQuota.toFixed(2) : '—';
+  const tip = state.aiCatalogError || `Anna 账户剩余额度 · 最后刷新 ${state.aiQuotaAt ? new Date(state.aiQuotaAt).toLocaleTimeString('zh-CN') : '—'}`;
+  return `<select class="select select--sm ai-model" data-action="ai:model" data-sig="${esc(sig)}"
+      title="选择本次生成使用的模型；留空表示由平台按账户偏好自动路由">
+      ${aiModelOptionsHTML(state)}
+    </select>
+    <span class="ai-quota${state.aiCatalogError ? ' ai-quota--warn' : ''}" data-ai-quota title="${esc(tip)}">CU ${quota}</span>
+    <button class="btn btn--ghost btn--sm btn--icon" data-action="ai:refresh" title="刷新模型列表与剩余额度">↻</button>`;
 }
 
 export function topbarHTML(state) {
@@ -40,7 +98,8 @@ export function topbarHTML(state) {
     <div class="topbar__right">
       ${state.deck ? `<button class="btn btn--secondary btn--sm" data-action="theme:open">全局主题 · ${esc(themeName)}</button>` : ''}
       <button class="btn btn--ghost btn--sm" data-action="undo:last"${state.undoStack.length ? '' : ' disabled'} title="撤销最近一次修改">↶ 撤销</button>
-      <span class="badge badge--mock">演示模式 · 未接入 AI</span>
+      <span class="badge ${state.aiMode === 'anna' ? 'badge--ai' : 'badge--mock'}" data-ai-badge title="${esc(aiBadgeTitle(state))}">${esc(aiBadgeText(state))}</span>
+      ${aiControlsHTML(state)}
       <span class="save" data-save-state data-state="${state.saveState}">${SAVE_LABEL[state.saveState] || ''}</span>
       <span class="host" data-host-state title="${esc(state.hostReason || '')}">${HOST_LABEL[state.host] || ''}</span>
     </div>
@@ -55,19 +114,27 @@ export function shellHTML(state, body) {
 
 function exportModal(m) {
   const r = m.result;
+  const err = m.error;
+  const warnings = Array.isArray(r?.warnings) ? r.warnings : [];
   return `<div class="modal-backdrop"><div class="modal">
-    <div class="modal__head">导出 PPTX <span class="badge badge--mock">演示模式</span></div>
+    <div class="modal__head">导出 PPTX <span class="badge ${r ? 'badge--ok' : 'badge--mock'}">${r ? '真实文件' : err ? '失败' : '处理中'}</span></div>
     <div class="modal__body">
       <div class="row row--between"><span>${esc(m.stage)}</span><b>${m.percent}%</b></div>
       <div class="progress"><div class="progress__bar" style="width:${m.percent}%"></div></div>
       <ul class="log-list">${(m.steps || []).map((s) => `<li>${esc(s)}</li>`).join('')}</ul>
+      ${err ? `<div class="error-box" style="margin-top:14px"><b>导出失败</b><br />${esc(err)}</div>` : ''}
       ${r ? `<div class="result-box" style="margin-top:14px">
-        <b>演示模式 — 本次未生成真实文件</b><br />
-        阶段 3 将使用文件名：<b>${esc(r.filename)}</b><br />
-        共 ${r.pages} 页 · 主题：${esc(r.theme)} · 布局：${esc((r.layouts || []).join('、'))}<br />
+        <b>已生成真实 .pptx 文件并触发本地下载</b><br />
+        文件名：<b>${esc(r.fileName)}</b><br />
+        大小：${(Number(r.size) / 1024).toFixed(1)} KB · 页数：${r.pages} · 主题：${esc(r.theme)}<br />
+        字体：${esc(r.stats?.font || '')} · 标题/正文：${r.stats?.titleSize}/${r.stats?.bodySize} pt · 页面 16:9<br />
+        布局：${esc((r.layouts || []).join('、'))}<br />
         ${esc(r.message)}<br />
-        本次没有调用 AI，也没有调用 upload.inline，CU 消耗为 0。
+        文本框、形状、连接线与图表均为 PowerPoint 原生可编辑对象；本次未调用 Anna AI 或 upload.inline。
       </div>` : ''}
+      ${warnings.length ? `<div class="warn-box" style="margin-top:10px"><b>排版提醒（${warnings.length}）</b>
+        <ul>${warnings.slice(0, 6).map((w) => `<li>${w.page ? `第 ${w.page} 页：` : ''}${esc(w.message)}</li>`).join('')}</ul>
+        ${warnings.length > 6 ? `<div class="tiny">…另有 ${warnings.length - 6} 条</div>` : ''}</div>` : ''}
     </div>
     <div class="modal__foot"><button class="btn btn--secondary" data-action="modal:close">关闭</button></div>
   </div></div>`;
@@ -87,12 +154,12 @@ function resetModal() {
 function addSlideModal(state) {
   const d = state.addDraft || { instruction: '', position: 'after' };
   return `<div class="modal-backdrop"><div class="modal">
-    <div class="modal__head">按描述新增页面 <span class="badge badge--mock">演示模式</span></div>
+    <div class="modal__head">按描述新增页面 ${aiModalBadge(state)}</div>
     <div class="modal__body">
       <div class="field">
         <label class="field__label">页面描述</label>
         <textarea class="textarea" data-draft-bind="add.instruction" placeholder="例如：新增一页横向时间轴，展示项目从立项到上线的五个阶段">${esc(d.instruction)}</textarea>
-        <span class="field__hint">AI 会按描述生成标题、内容、布局与结构化元素（本地 Mock）</span>
+        <span class="field__hint">AI 会按描述生成标题、内容、布局与结构化元素（${state.aiMode === 'anna' ? 'Anna AI' : '本地 Mock'}）</span>
       </div>
       <div class="field" style="margin-top:14px">
         <label class="field__label">插入位置</label>
@@ -156,7 +223,7 @@ function themeModal(state) {
     ['accentColor', '强调色'], ['titleColor', '标题色'], ['bodyColor', '正文色'],
   ];
   return `<div class="modal-backdrop"><div class="modal modal--wide">
-    <div class="modal__head">全局主题设计 <span class="badge badge--mock">演示模式</span></div>
+    <div class="modal__head">全局主题设计 ${aiModalBadge(state)}</div>
     <div class="modal__body modal__body--scroll">
       <div class="prop-title">预设主题</div>
       <div class="preset-row">${THEME_IDS.map((id) => {
@@ -217,7 +284,12 @@ function themeModal(state) {
 
 export function overlayHTML(state) {
   let html = '';
-  if (state.toast) html += `<div class="toast toast--${esc(state.toast.type)}">${esc(state.toast.text)}</div>`;
+  if (state.toast) {
+    const tag = state.toast.type === 'error' && state.aiError
+      ? `<span class="toast__code">${esc(AI_ERROR_LABEL[state.aiError.code] || '生成失败')}</span>`
+      : '';
+    html += `<div class="toast toast--${esc(state.toast.type)}">${tag}${esc(state.toast.text)}</div>`;
+  }
   if (state.modal) {
     const type = state.modal.type;
     if (type === 'export') html += exportModal(state.modal);
@@ -237,6 +309,27 @@ export function patchStatus(state) {
   if (host) { host.textContent = HOST_LABEL[state.host] || ''; host.title = state.hostReason || ''; }
   const err = document.querySelector('[data-create-error]');
   if (err) err.textContent = state.createError || '';
+  const aiBadge = document.querySelector('[data-ai-badge]');
+  if (aiBadge) {
+    aiBadge.textContent = aiBadgeText(state);
+    aiBadge.title = aiBadgeTitle(state);
+  }
+  const quotaEl = document.querySelector('[data-ai-quota]');
+  if (quotaEl) {
+    quotaEl.textContent = `CU ${Number.isFinite(state.aiQuota) ? state.aiQuota.toFixed(2) : '—'}`;
+    quotaEl.title = state.aiCatalogError || `Anna 账户剩余额度 · 最后刷新 ${state.aiQuotaAt ? new Date(state.aiQuotaAt).toLocaleTimeString('zh-CN') : '—'}`;
+    quotaEl.classList.toggle('ai-quota--warn', !!state.aiCatalogError);
+  }
+  // 目录只在签名变化时重建，避免打断用户正在操作的下拉。
+  const sel = document.querySelector('[data-action="ai:model"]');
+  if (sel) {
+    const sig = (Array.isArray(state.aiModels) ? state.aiModels : []).map((m) => m.name).join('|');
+    if (sel.dataset.sig !== sig) {
+      sel.innerHTML = aiModelOptionsHTML(state);
+      sel.dataset.sig = sig;
+    }
+    sel.value = state.aiModel || '';
+  }
 }
 
 /** 幻灯片画布固定 960×540，按容器宽度等比缩放；缩略图与大图共用同一渲染函数。 */
